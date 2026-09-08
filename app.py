@@ -478,20 +478,31 @@ with tab_trend:
     else:
         st.info("ไม่พบข้อมูลวันที่ในการประมวลผลเทรนด์รายวัน")
 
-# --- TAB 3: ตารางตัวเลข ---
+# --- TAB 3: ตารางตัวเลข (แก้ไขส่วนที่เกิด KeyError เรียบร้อย) ---
 with tab_table:
     st.markdown("##### 📋 ตารางสรุปยอดขายแยกตามสาขา")
-    if not df_filtered.empty:
-        branch_table = df_filtered.groupby('NAME').agg(
+    if not df_filtered.empty and 'GRANDTOTAL' in df_filtered.columns:
+        # จัดกลุ่มข้อมูลด้วย Named Aggregation
+        branch_table = df_filtered.groupby('NAME', as_index=False).agg(
             ยอดขายรวม=('GRANDTOTAL', 'sum'),
             จำนวนบิล=('GRANDTOTAL', 'count')
-        ).reset_index()
-        
-        branch_table['ยอดเฉลี่ยต่อบิล'] = branch_table.apply(
-            lambda r: r['ยอดขายรวม'] / r['จำนวนบิล'] if r['จำนวนบิล'] > 0 else 0.0, axis=1
         )
-        branch_table = branch_table.sort_values(by='ยอดขายรวม', ascending=False)
-        branch_table.columns = ['สาขา', 'ยอดขายรวม (บาท)', 'จำนวนบิล', 'ยอดเฉลี่ยต่อบิล (บาท)']
+        
+        # คำนวณยอดเฉลี่ยต่อบิลแบบ Vectorized
+        branch_table['ยอดเฉลี่ยต่อบิล (บาท)'] = 0.0
+        mask = branch_table['จำนวนบิล'] > 0
+        branch_table.loc[mask, 'ยอดเฉลี่ยต่อบิล (บาท)'] = (
+            branch_table.loc[mask, 'ยอดขายรวม'] / branch_table.loc[mask, 'จำนวนบิล']
+        )
+        
+        # เปลี่ยนชื่อคอลัมน์ให้แสดงผลสวยงาม
+        branch_table = branch_table.rename(columns={
+            'NAME': 'สาขา',
+            'ยอดขายรวม': 'ยอดขายรวม (บาท)'
+        })
+        
+        # เรียงลำดับจากยอดขายรวมมากไปน้อย
+        branch_table = branch_table.sort_values(by='ยอดขายรวม (บาท)', ascending=False)
         
         st.dataframe(
             branch_table.style.format({

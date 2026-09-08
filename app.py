@@ -97,7 +97,6 @@ def get_sales_amount_series(df):
     
     df_cols_upper = {str(c).strip().replace('\ufeff', '').upper(): c for c in df.columns}
     
-    # 1. ค้นหาแบบตรงกับคำค้นหา
     for col in candidates:
         col_u = col.upper()
         if col_u in df_cols_upper:
@@ -106,7 +105,6 @@ def get_sales_amount_series(df):
             if s.abs().sum() > 0:
                 return s
 
-    # 2. ค้นหาแบบบางส่วนของชื่อคอลัมน์
     keywords = ['AMT', 'AMOUNT', 'VAL', 'NET', 'TOTAL', 'PRICE', 'ยอด', 'เงิน', 'ราคา', 'มูลค่า']
     for col_u, real_col in df_cols_upper.items():
         if any(kw in col_u for kw in keywords):
@@ -116,7 +114,6 @@ def get_sales_amount_series(df):
             if s.abs().sum() > 0:
                 return s
 
-    # 3. ค้นหาจากคอลัมน์ทั้งหมดที่มีตัวเลขยอดรวมสูงสุด
     best_series = None
     max_sum = 0
     for real_col in df.columns:
@@ -155,7 +152,7 @@ def get_branch_series(df):
     return pd.Series('ไม่ระบุสาขา', index=df.index)
 
 def parse_date_column(df):
-    """แปลงคอลัมน์วันที่ รองรับทั้ง พ.ศ. และ ค.ศ."""
+    """แปลงคอลัมน์วันที่อย่างแม่นยำ รองรับทั้ง พ.ศ. และ ค.ศ."""
     date_cols = [
         'DOC_DATE', 'DATE', 'DOCDATE', 'DOC_DT', 'DOC_TIME', 
         'TRAN_DATE', 'TRD_DATE', 'DI_DATE', 'วันที่', 'วัน/เดือน/ปี', 'DATE_TIME', 'CREATED_AT'
@@ -175,27 +172,40 @@ def parse_date_column(df):
                 break
                 
     if found_col:
-        s_date = df[found_col].astype(str).str.strip()
+        col_s = df[found_col]
         
-        def convert_be_to_ce(val):
-            if pd.isna(val) or str(val).lower() in ['nan', 'none', 'nat', '']:
-                return None
-            val_str = str(val)
-            m = re.search(r'\b(24\d{2}|25\d{2}|26\d{2})\b', val_str)
+        def convert_single_val(val):
+            if pd.isna(val) or val is None:
+                return pd.NaT
+            if isinstance(val, (pd.Timestamp, datetime)):
+                if val.year > 2400:
+                    try: return val.replace(year=val.year - 543)
+                    except: return pd.NaT
+                return val
+            
+            s = str(val).strip()
+            if s.lower() in ['nan', 'none', 'nat', '', 'null']:
+                return pd.NaT
+                
+            m = re.search(r'\b(25\d{2}|26\d{2})\b', s)
             if m:
-                be_year = int(m.group(1))
-                ce_year = be_year - 543
-                val_str = val_str.replace(str(be_year), str(ce_year))
-            return val_str
+                be_yr = int(m.group(1))
+                ce_yr = be_yr - 543
+                s = s.replace(str(be_yr), str(ce_yr))
+                
+            try:
+                return pd.to_datetime(s, dayfirst=True)
+            except:
+                try:
+                    return pd.to_datetime(s)
+                except:
+                    return pd.NaT
 
-        converted_dates = s_date.apply(convert_be_to_ce)
-        df['Parsed_Date'] = pd.to_datetime(converted_dates, errors='coerce', dayfirst=True)
-        
-        mask_nat = df['Parsed_Date'].isna()
-        if mask_nat.any():
-            df.loc[mask_nat, 'Parsed_Date'] = pd.to_datetime(df.loc[mask_nat, found_col], errors='coerce')
-
-        df['Year_BE'] = df['Parsed_Date'].dt.year.apply(lambda y: int(y + 543) if pd.notnull(y) and not pd.isna(y) else None)
+        parsed_series = col_s.apply(convert_single_val)
+        df['Parsed_Date'] = pd.to_datetime(parsed_series, errors='coerce')
+        df['Year_BE'] = df['Parsed_Date'].dt.year.apply(
+            lambda y: int(y + 543) if pd.notna(y) and not pd.isna(y) else None
+        )
     else:
         df['Parsed_Date'] = pd.NaT
         df['Year_BE'] = None
@@ -208,7 +218,6 @@ def process_product_dataframe(df):
     df['NAME'] = get_branch_series(df)
     df['GRANDTOTAL'] = get_sales_amount_series(df)
     
-    # QTY
     qty_candidates = ['TRD_QTY', 'DI_QTY', 'QTY', 'QUANTITY', 'AMOUNT_QTY', 'TOTAL_QTY', 'จำนวน']
     df_cols_upper = {str(c).strip().replace('\ufeff', '').upper(): c for c in df.columns}
     df['QTY'] = 1.0
@@ -327,68 +336,64 @@ df_sales = load_all_sales_data()
 # --- SIDEBAR FILTERS ---
 st.sidebar.markdown("### 🔍 เมนูกรองข้อมูล")
 
-# 1. กรองปี พ.ศ.
-available_years = sorted([int(y) for y in df_sales['Year_BE'].dropna().unique()], reverse=True) if not df_sales.empty and 'Year_BE' in df_sales.columns and df_sales['Year_BE'].notna().any() else [2569, 2568]
-selected_years = st.sidebar.multiselect("📅 เลือกปี พ.ศ.:", options=available_years, default=available_years)
-
-# 2. กรองสาขา
+# 1. กรองสาขา
 available_branches = sorted(list(df_sales['NAME'].dropna().unique())) if not df_sales.empty and 'NAME' in df_sales.columns else []
 selected_branches = st.sidebar.multiselect("🏪 เลือกสาขา:", options=available_branches, default=available_branches)
 
-# 3. ระบบกรองช่วงวันที่ (ปรับปรุงใหม่)
+# 2. กรองปี พ.ศ.
+available_years = sorted([int(y) for y in df_sales['Year_BE'].dropna().unique()], reverse=True) if not df_sales.empty and 'Year_BE' in df_sales.columns and df_sales['Year_BE'].notna().any() else []
+selected_years = st.sidebar.multiselect("📅 เลือกปี พ.ศ.:", options=available_years, default=available_years)
+
+# 3. กรองช่วงเวลา / วันที่
 st.sidebar.markdown("---")
 st.sidebar.markdown("##### 📅 กรองตามช่วงวันที่")
 
-has_date_data = not df_sales.empty and 'Parsed_Date' in df_sales.columns and not df_sales['Parsed_Date'].isna().all()
-
-if has_date_data:
-    min_data_date = df_sales['Parsed_Date'].min().date()
-    max_data_date = df_sales['Parsed_Date'].max().date()
-else:
-    min_data_date = datetime.now().date()
-    max_data_date = datetime.now().date()
-
 quick_time = st.sidebar.selectbox(
-    "เลือกช่วงเวลาด่วน:",
+    "เลือกช่วงเวลา:",
     ["ทั้งหมดในระบบ", "วันนี้", "เมื่อวาน", "7 วันล่าสุด", "30 วันล่าสุด", "เดือนนี้", "กำหนดช่วงวันที่เอง"]
 )
+
+filter_start_date = None
+filter_end_date = None
 
 current_time_th = datetime.utcnow() + timedelta(hours=7)
 today_date = current_time_th.date()
 
 if quick_time == "วันนี้":
-    default_start, default_end = today_date, today_date
+    filter_start_date, filter_end_date = today_date, today_date
 elif quick_time == "เมื่อวาน":
-    default_start, default_end = today_date - timedelta(days=1), today_date - timedelta(days=1)
+    filter_start_date, filter_end_date = today_date - timedelta(days=1), today_date - timedelta(days=1)
 elif quick_time == "7 วันล่าสุด":
-    default_start, default_end = today_date - timedelta(days=7), today_date
+    filter_start_date, filter_end_date = today_date - timedelta(days=7), today_date
 elif quick_time == "30 วันล่าสุด":
-    default_start, default_end = today_date - timedelta(days=30), today_date
+    filter_start_date, filter_end_date = today_date - timedelta(days=30), today_date
 elif quick_time == "เดือนนี้":
-    default_start, default_end = today_date.replace(day=1), today_date
-else:
-    default_start, default_end = min_data_date, max_data_date
+    filter_start_date, filter_end_date = today_date.replace(day=1), today_date
+elif quick_time == "กำหนดช่วงวันที่เอง":
+    has_date_data = not df_sales.empty and 'Parsed_Date' in df_sales.columns and not df_sales['Parsed_Date'].isna().all()
+    min_d = df_sales['Parsed_Date'].min().date() if has_date_data else today_date
+    max_d = df_sales['Parsed_Date'].max().date() if has_date_data else today_date
+    
+    col_d1, col_d2 = st.sidebar.columns(2)
+    with col_d1:
+        filter_start_date = st.date_input("เริ่มต้น:", value=min_d)
+    with col_d2:
+        filter_end_date = st.date_input("สิ้นสุด:", value=max_d)
 
-col_d1, col_d2 = st.sidebar.columns(2)
-with col_d1:
-    start_date = st.date_input("วันที่เริ่มต้น:", value=default_start)
-with col_d2:
-    end_date = st.date_input("วันที่สิ้นสุด:", value=default_end)
-
-# --- ประมวลผลการกรองข้อมูล ---
+# --- ประมวลผลการกรองข้อมูลหลัก ---
 df_filtered = df_sales.copy()
 
 if not df_filtered.empty:
-    if selected_years and 'Year_BE' in df_filtered.columns and df_filtered['Year_BE'].notna().any():
-        df_filtered = df_filtered[df_filtered['Year_BE'].isin(selected_years)]
-        
     if selected_branches and 'NAME' in df_filtered.columns:
         df_filtered = df_filtered[df_filtered['NAME'].isin(selected_branches)]
-    
-    if has_date_data and start_date and end_date:
+        
+    if selected_years and 'Year_BE' in df_filtered.columns:
+        df_filtered = df_filtered[df_filtered['Year_BE'].isin(selected_years)]
+        
+    if filter_start_date and filter_end_date and 'Parsed_Date' in df_filtered.columns:
         df_filtered = df_filtered[
-            (df_filtered['Parsed_Date'].dt.date >= start_date) & 
-            (df_filtered['Parsed_Date'].dt.date <= end_date)
+            (df_filtered['Parsed_Date'].dt.date >= filter_start_date) & 
+            (df_filtered['Parsed_Date'].dt.date <= filter_end_date)
         ]
 
 # ==========================================
@@ -414,7 +419,7 @@ st.markdown("<br>", unsafe_allow_html=True)
 def render_branch_visualizations(df_source):
     """วาดกราฟแท่งและกราฟโดนัทประจำสาขา"""
     if df_source.empty or df_source['GRANDTOTAL'].sum() == 0:
-        st.info("ไม่พบข้อมูลยอดขาย หรือยอดขายเป็น 0.00 (โปรดตรวจสอบไฟล์ข้อมูล)")
+        st.info("ไม่พบข้อมูลยอดขายตามเงื่อนไขการกรองที่เลือก")
         return
 
     branch_summary = df_source.groupby('NAME')['GRANDTOTAL'].sum().reset_index()
@@ -483,7 +488,7 @@ with tab_branch:
     if not df_filtered.empty:
         render_branch_visualizations(df_filtered)
     else:
-        st.info("ไม่พบข้อมูลยอดขาย (ภายใต้เงื่อนไขการกรองปัจจุบัน)")
+        st.info("ไม่พบข้อมูลยอดขาย (ตามเงื่อนไขการกรองปัจจุบัน)")
 
 # --- TAB 2: เทรนด์รายวัน ---
 with tab_trend:
@@ -494,10 +499,13 @@ with tab_trend:
         daily_sales.columns = ['วันที่', 'ยอดขาย']
         daily_sales = daily_sales.sort_values('วันที่')
         
-        fig_line = px.line(daily_sales, x='วันที่', y='ยอดขาย', markers=True, line_shape='linear')
-        fig_line.update_traces(line_color='#2b9e3e', line_width=3)
-        fig_line.update_layout(height=400, xaxis_title="วันที่", yaxis_title="ยอดขาย (บาท)", plot_bgcolor='rgba(0,0,0,0)')
-        st.plotly_chart(fig_line, use_container_width=True)
+        if not daily_sales.empty:
+            fig_line = px.line(daily_sales, x='วันที่', y='ยอดขาย', markers=True, line_shape='linear')
+            fig_line.update_traces(line_color='#2b9e3e', line_width=3)
+            fig_line.update_layout(height=400, xaxis_title="วันที่", yaxis_title="ยอดขาย (บาท)", plot_bgcolor='rgba(0,0,0,0)')
+            st.plotly_chart(fig_line, use_container_width=True)
+        else:
+            st.info("ไม่พบข้อมูลยอดขายรายวันตามเงื่อนไขการกรองที่เลือก")
     else:
         st.info("ไม่พบข้อมูลวันที่ในการประมวลผลเทรนด์รายวัน")
 
@@ -526,7 +534,7 @@ with tab_table:
             hide_index=True
         )
     else:
-        st.info("ไม่พบข้อมูลสำหรับการแสดงตาราง")
+        st.info("ไม่พบข้อมูลสำหรับการแสดงตารางตามเงื่อนไขที่เลือก")
 
 # --- TAB 4: สินค้าขายดี ---
 with tab_bestseller:
@@ -556,22 +564,16 @@ with tab_bestseller:
         df_p_filtered = df_product.copy()
         
         if selected_branches and 'NAME' in df_p_filtered.columns:
-            matched_p = df_p_filtered[df_p_filtered['NAME'].isin(selected_branches)]
-            if not matched_p.empty:
-                df_p_filtered = matched_p
+            df_p_filtered = df_p_filtered[df_p_filtered['NAME'].isin(selected_branches)]
         
-        if selected_years and 'Year_BE' in df_p_filtered.columns and not df_p_filtered['Year_BE'].isna().all():
-            matched_y = df_p_filtered[df_p_filtered['Year_BE'].isin(selected_years)]
-            if not matched_y.empty:
-                df_p_filtered = matched_y
+        if selected_years and 'Year_BE' in df_p_filtered.columns:
+            df_p_filtered = df_p_filtered[df_p_filtered['Year_BE'].isin(selected_years)]
 
-        if has_date_data and start_date and end_date and 'Parsed_Date' in df_p_filtered.columns and not df_p_filtered['Parsed_Date'].isna().all():
-            matched_d = df_p_filtered[
-                (df_p_filtered['Parsed_Date'].dt.date >= start_date) & 
-                (df_p_filtered['Parsed_Date'].dt.date <= end_date)
+        if filter_start_date and filter_end_date and 'Parsed_Date' in df_p_filtered.columns:
+            df_p_filtered = df_p_filtered[
+                (df_p_filtered['Parsed_Date'].dt.date >= filter_start_date) & 
+                (df_p_filtered['Parsed_Date'].dt.date <= filter_end_date)
             ]
-            if not matched_d.empty:
-                df_p_filtered = matched_d
 
         possible_p_cols = [
             'TRD_SH_NAME', 'DI_PRD_NAME', 'GOODS_NAME', 'DI_NAME', 'PRD_NAME', 'GOODSNAME', 
@@ -641,6 +643,6 @@ with tab_bestseller:
                         hide_index=True
                     )
             else:
-                st.info("ไม่พบรายการสินค้าที่มียอดขายมากกว่า 0 บาท")
+                st.info("ไม่พบรายการสินค้าที่มียอดขายมากกว่า 0 บาท ตามเงื่อนไขการกรองที่เลือก")
         else:
-            st.info("ไม่พบข้อมูลสินค้าในการประมวลผล")
+            st.info("ไม่พบข้อมูลสินค้าตามเงื่อนไขการกรองที่เลือก")

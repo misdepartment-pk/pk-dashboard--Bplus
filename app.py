@@ -152,25 +152,27 @@ def get_branch_series(df):
     return pd.Series('ไม่ระบุสาขา', index=df.index)
 
 def parse_date_column(df):
-    """แปลงคอลัมน์วันที่อย่างแม่นยำ รองรับทั้ง พ.ศ. และ ค.ศ."""
-    date_cols = [
-        'DOC_DATE', 'DATE', 'DOCDATE', 'DOC_DT', 'DOC_TIME', 
-        'TRAN_DATE', 'TRD_DATE', 'DI_DATE', 'วันที่', 'วัน/เดือน/ปี', 'DATE_TIME', 'CREATED_AT'
+    """ค้นหาและแปลงคอลัมน์วันที่แบบครอบจักรวาล"""
+    date_cols_keywords = [
+        'DOC_DATE', 'DOCDATE', 'DI_DATE', 'TRD_DATE', 'TRAN_DATE', 'DATE', 'DATETIME', 
+        'วันที่', 'วัน/เดือน/ปี', 'DOC_DT', 'CREATED_AT', 'SALE_DATE', 'SDATE', 'D_DATE', 
+        'TR_DATE', 'DATE_TIME', 'CREATE_DATE'
     ]
     cols_map = {str(c).strip().replace('\ufeff', '').upper(): c for c in df.columns}
     
     found_col = None
-    for c in date_cols:
-        if c in cols_map:
-            found_col = cols_map[c]
+    for kw in date_cols_keywords:
+        if kw in cols_map:
+            found_col = cols_map[kw]
             break
             
     if not found_col:
         for c_u, real_c in cols_map.items():
-            if 'DATE' in c_u or 'วัน' in c_u or 'TIME' in c_u:
-                found_col = real_c
-                break
-                
+            if any(k in c_u for k in ['DATE', 'TIME', 'วัน', 'DT']):
+                if not any(skip in c_u for skip in ['UPDATE', 'MODIFIED', 'TIME_STAMP']):
+                    found_col = real_c
+                    break
+
     if found_col:
         col_s = df[found_col]
         
@@ -192,6 +194,12 @@ def parse_date_column(df):
             if s.lower() in ['nan', 'none', 'nat', '', 'null']:
                 return pd.NaT
                 
+            if len(s) == 8 and s.isdigit():
+                yr = int(s[:4])
+                if yr > 2400: yr -= 543
+                try: return datetime(yr, int(s[4:6]), int(s[6:8]))
+                except: pass
+
             m = re.search(r'\b(25\d{2}|26\d{2})\b', s)
             if m:
                 be_yr = int(m.group(1))
@@ -208,12 +216,16 @@ def parse_date_column(df):
 
         parsed_series = col_s.apply(convert_single_val)
         df['Parsed_Date'] = pd.to_datetime(parsed_series, errors='coerce')
+    else:
+        df['Parsed_Date'] = pd.NaT
+
+    if 'Parsed_Date' in df.columns and df['Parsed_Date'].notna().any():
         df['Year_BE'] = df['Parsed_Date'].dt.year.apply(
             lambda y: int(y + 543) if pd.notna(y) and not pd.isna(y) else None
         )
     else:
-        df['Parsed_Date'] = pd.NaT
         df['Year_BE'] = None
+
     return df
 
 def process_product_dataframe(df):
@@ -364,7 +376,11 @@ filter_end_date = None
 current_time_th = datetime.utcnow() + timedelta(hours=7)
 today_date = current_time_th.date()
 
-if quick_time == "วันนี้":
+has_valid_dates = not df_sales.empty and 'Parsed_Date' in df_sales.columns and df_sales['Parsed_Date'].notna().any()
+
+if quick_time == "ทั้งหมดในระบบ":
+    filter_start_date, filter_end_date = None, None
+elif quick_time == "วันนี้":
     filter_start_date, filter_end_date = today_date, today_date
 elif quick_time == "เมื่อวาน":
     filter_start_date, filter_end_date = today_date - timedelta(days=1), today_date - timedelta(days=1)
@@ -375,8 +391,7 @@ elif quick_time == "30 วันล่าสุด":
 elif quick_time == "เดือนนี้":
     filter_start_date, filter_end_date = today_date.replace(day=1), today_date
 elif quick_time == "กำหนดช่วงวันที่เอง":
-    has_date_data = not df_sales.empty and 'Parsed_Date' in df_sales.columns and df_sales['Parsed_Date'].notna().any()
-    if has_date_data:
+    if has_valid_dates:
         valid_dates_series = df_sales['Parsed_Date'].dropna()
         min_d = valid_dates_series.min().date()
         max_d = valid_dates_series.max().date()
@@ -399,10 +414,12 @@ if not df_filtered.empty:
     if selected_years and 'Year_BE' in df_filtered.columns:
         df_filtered = df_filtered[df_filtered['Year_BE'].isin(selected_years)]
         
-    if filter_start_date and filter_end_date and 'Parsed_Date' in df_filtered.columns:
+    if quick_time != "ทั้งหมดในระบบ" and filter_start_date and filter_end_date and 'Parsed_Date' in df_filtered.columns and df_filtered['Parsed_Date'].notna().any():
         start_ts = pd.to_datetime(filter_start_date)
         end_ts = pd.to_datetime(filter_end_date) + pd.Timedelta(days=1) - pd.Timedelta(nanoseconds=1)
+        
         df_filtered = df_filtered[
+            df_filtered['Parsed_Date'].notna() &
             (df_filtered['Parsed_Date'] >= start_ts) & 
             (df_filtered['Parsed_Date'] <= end_ts)
         ]
@@ -581,10 +598,12 @@ with tab_bestseller:
         if selected_years and 'Year_BE' in df_p_filtered.columns:
             df_p_filtered = df_p_filtered[df_p_filtered['Year_BE'].isin(selected_years)]
 
-        if filter_start_date and filter_end_date and 'Parsed_Date' in df_p_filtered.columns:
+        if quick_time != "ทั้งหมดในระบบ" and filter_start_date and filter_end_date and 'Parsed_Date' in df_p_filtered.columns and df_p_filtered['Parsed_Date'].notna().any():
             start_ts = pd.to_datetime(filter_start_date)
             end_ts = pd.to_datetime(filter_end_date) + pd.Timedelta(days=1) - pd.Timedelta(nanoseconds=1)
+            
             df_p_filtered = df_p_filtered[
+                df_p_filtered['Parsed_Date'].notna() &
                 (df_p_filtered['Parsed_Date'] >= start_ts) & 
                 (df_p_filtered['Parsed_Date'] <= end_ts)
             ]

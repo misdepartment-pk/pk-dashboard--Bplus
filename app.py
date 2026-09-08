@@ -65,29 +65,128 @@ branch_color_map = {
 }
 
 def clean_numeric(series):
-    """ทำความสะอาดข้อมูลตัวเลข ลบจุลภาค (,) และแปลงเป็น float"""
+    """ทำความสะอาดข้อมูลตัวเลข ลบจุลภาค (,), ฿, ช่องว่าง และแปลงเป็น float"""
     if series is None:
-        return 0.0
-    cleaned = series.astype(str).str.replace(',', '', regex=False).str.replace('฿', '', regex=False).str.strip()
-    return pd.to_numeric(cleaned, errors='coerce').fillna(0.0)
+        return pd.Series(0.0)
+    
+    if pd.api.types.is_numeric_dtype(series):
+        return series.fillna(0.0).astype(float)
+        
+    s = series.astype(str).str.strip()
+    s = s.str.replace('\ufeff', '', regex=False)
+    s = s.str.replace('\xa0', '', regex=False)
+    s = s.str.replace(',', '', regex=False)
+    s = s.str.replace('฿', '', regex=False)
+    s = s.str.replace('THB', '', regex=False, case=False)
+    s = s.str.replace(' ', '', regex=False)
+    s = s.str.replace(r'^\((.*)\)$', r'-\1', regex=True)
+    
+    return pd.to_numeric(s, errors='coerce').fillna(0.0)
+
+def get_sales_amount_series(df):
+    """ค้นหาคอลัมน์ยอดขายอย่างฉลาดและดึงข้อมูลออกมา"""
+    candidates = [
+        'TRD_B_AMT', 'TRD_B_AMNT', 'TRD_AMOUNT', 'TRD_AMT', 'TRD_NET', 'TRD_VAL', 'TRD_G_AMT',
+        'DI_AMOUNT', 'DI_NET_VAL', 'DI_AMOUNT_NET', 'DI_TOTAL',
+        'NET_VAL', 'NET_AMT', 'NET_AMOUNT', 'NETVAL', 'NET_BAHT', 'NET',
+        'TOTAL_NET', 'TOTAL_AMT', 'TOTAL_AMOUNT', 'TOTAL_VAL', 'TOTAL_PRICE', 'TOTAL',
+        'GRANDTOTAL', 'GRAND_TOTAL', 'SUM_AMOUNT', 'SUM_AMT', 'SUM_VAL',
+        'AMOUNT', 'AMOUNT_TH', 'AMOUNT_BAHT', 'VAL', 'VALUE', 'PRICE',
+        'ยอดขาย', 'ยอดเงิน', 'จำนวนเงิน', 'จำนวนเงินรวม', 'มูลค่า', 'ราคารวม', 'ยอดรวม', 'ยอดรวมทั้งสิ้น'
+    ]
+    
+    df_cols_upper = {str(c).strip().replace('\ufeff', '').upper(): c for c in df.columns}
+    
+    # 1. ค้นหาแบบตรงกับคำค้นหา
+    for col in candidates:
+        col_u = col.upper()
+        if col_u in df_cols_upper:
+            real_col = df_cols_upper[col_u]
+            s = clean_numeric(df[real_col])
+            if s.abs().sum() > 0:
+                return s
+
+    # 2. ค้นหาแบบบางส่วนของชื่อคอลัมน์
+    keywords = ['AMT', 'AMOUNT', 'VAL', 'NET', 'TOTAL', 'PRICE', 'ยอด', 'เงิน', 'ราคา', 'มูลค่า']
+    for col_u, real_col in df_cols_upper.items():
+        if any(kw in col_u for kw in keywords):
+            if any(skip in col_u for skip in ['QTY', 'QUANTITY', 'DATE', 'TIME', 'YEAR', 'MONTH', 'DAY', 'ID', 'NO', 'NUM', 'CODE', 'RATE', 'PERCENT', 'DISC', 'TAX', 'VAT']):
+                continue
+            s = clean_numeric(df[real_col])
+            if s.abs().sum() > 0:
+                return s
+
+    # 3. ค้นหาจากคอลัมน์ทั้งหมดที่มีตัวเลขยอดรวมสูงสุด
+    best_series = None
+    max_sum = 0
+    for real_col in df.columns:
+        col_u = str(real_col).strip().replace('\ufeff', '').upper()
+        if any(skip in col_u for skip in ['QTY', 'QUANTITY', 'DATE', 'TIME', 'YEAR', 'MONTH', 'DAY', 'ID', 'NO', 'NUM', 'CODE', 'BRANCH', 'NAME', 'สาขา', 'วันที่']):
+            continue
+        s = clean_numeric(df[real_col])
+        current_sum = s.abs().sum()
+        if current_sum > max_sum:
+            max_sum = current_sum
+            best_series = s
+
+    if best_series is not None and max_sum > 0:
+        return best_series
+
+    return pd.Series(0.0, index=df.index)
+
+def get_branch_series(df):
+    """ค้นหาคอลัมน์ชื่อสาขา"""
+    branch_candidates = [
+        'NAME', 'BRANCH', 'BRANCH_NAME', 'NAME_TH', 'DI_BRANCH', 'BRANCHNAME',
+        'สาขา', 'ชื่อสาขา', 'สถานี', 'SHOP', 'SHOP_NAME', 'STORE'
+    ]
+    df_cols_upper = {str(c).strip().replace('\ufeff', '').upper(): c for c in df.columns}
+    
+    for col in branch_candidates:
+        col_u = col.upper()
+        if col_u in df_cols_upper:
+            real_col = df_cols_upper[col_u]
+            return df[real_col].astype(str).str.strip()
+            
+    for col_u, real_col in df_cols_upper.items():
+        if 'BRANCH' in col_u or 'สาขา' in col_u or 'SHOP' in col_u:
+            return df[real_col].astype(str).str.strip()
+            
+    return pd.Series('ไม่ระบุสาขา', index=df.index)
 
 def parse_date_column(df):
     """แปลงคอลัมน์วันที่ รองรับทั้ง พ.ศ. และ ค.ศ."""
-    date_cols = ['DOC_DATE', 'DATE', 'DOCDATE', 'DOC_DT', 'DOC_TIME', 'TRAN_DATE', 'TRD_DATE', 'DI_DATE', 'วันที่', 'วัน/เดือน/ปี']
-    found_col = next((c for c in date_cols if c in df.columns), None)
+    date_cols = [
+        'DOC_DATE', 'DATE', 'DOCDATE', 'DOC_DT', 'DOC_TIME', 
+        'TRAN_DATE', 'TRD_DATE', 'DI_DATE', 'วันที่', 'วัน/เดือน/ปี', 'DATE_TIME', 'CREATED_AT'
+    ]
+    cols_map = {str(c).strip().replace('\ufeff', '').upper(): c for c in df.columns}
     
+    found_col = None
+    for c in date_cols:
+        if c in cols_map:
+            found_col = cols_map[c]
+            break
+            
+    if not found_col:
+        for c_u, real_c in cols_map.items():
+            if 'DATE' in c_u or 'วัน' in c_u or 'TIME' in c_u:
+                found_col = real_c
+                break
+                
     if found_col:
         s_date = df[found_col].astype(str).str.strip()
         
         def convert_be_to_ce(val):
-            if pd.isna(val) or val.lower() in ['nan', 'none', 'nat', '']:
+            if pd.isna(val) or str(val).lower() in ['nan', 'none', 'nat', '']:
                 return None
-            m = re.search(r'\b(24\d{2}|25\d{2}|26\d{2})\b', val)
+            val_str = str(val)
+            m = re.search(r'\b(24\d{2}|25\d{2}|26\d{2})\b', val_str)
             if m:
                 be_year = int(m.group(1))
                 ce_year = be_year - 543
-                val = val.replace(str(be_year), str(ce_year))
-            return val
+                val_str = val_str.replace(str(be_year), str(ce_year))
+            return val_str
 
         converted_dates = s_date.apply(convert_be_to_ce)
         df['Parsed_Date'] = pd.to_datetime(converted_dates, errors='coerce', dayfirst=True)
@@ -103,56 +202,56 @@ def parse_date_column(df):
     return df
 
 def process_product_dataframe(df):
-    """ทำความสะอาดข้อมูลของไฟล์ Product/BPLUS Data"""
-    df.columns = [str(c).strip().upper() for c in df.columns]
+    """ทำความสะอาดข้อมูลสินค้า BPLUS"""
+    df.columns = [str(c).strip().replace('\ufeff', '') for c in df.columns]
     df = parse_date_column(df)
+    df['NAME'] = get_branch_series(df)
+    df['GRANDTOTAL'] = get_sales_amount_series(df)
     
-    branch_cols = ['BRANCH', 'BRANCH_NAME', 'NAME', 'สาขา', 'NAME_TH', 'DI_BRANCH']
-    b_col = next((c for c in branch_cols if c in df.columns), None)
-    if b_col:
-        df['NAME'] = df[b_col]
-        df['HAS_BRANCH_COL'] = True
-    else:
-        df['HAS_BRANCH_COL'] = False
-
-    sales_cols = ['TRD_B_AMT', 'DI_AMOUNT', 'NET_VAL', 'TOTAL_NET', 'GRANDTOTAL', 'TOTAL', 'AMOUNT', 'NET_AMOUNT', 'TOTAL_AMOUNT', 'SUM_AMOUNT', 'ยอดขาย', 'จำนวนเงิน']
-    s_col = next((c for c in sales_cols if c in df.columns), None)
-    df['GRANDTOTAL'] = clean_numeric(df[s_col]) if s_col else 0.0
-
-    qty_cols = ['TRD_QTY', 'DI_QTY', 'QTY', 'QUANTITY', 'AMOUNT_QTY', 'TOTAL_QTY', 'จำนวน']
-    q_col = next((c for c in qty_cols if c in df.columns), None)
-    df['QTY'] = clean_numeric(df[q_col]) if q_col else 1.0
+    # QTY
+    qty_candidates = ['TRD_QTY', 'DI_QTY', 'QTY', 'QUANTITY', 'AMOUNT_QTY', 'TOTAL_QTY', 'จำนวน']
+    df_cols_upper = {str(c).strip().replace('\ufeff', '').upper(): c for c in df.columns}
+    df['QTY'] = 1.0
+    for col in qty_candidates:
+        col_u = col.upper()
+        if col_u in df_cols_upper:
+            df['QTY'] = clean_numeric(df[df_cols_upper[col_u]])
+            break
 
     return df
 
 def load_all_sales_data():
-    """โหลดข้อมูลยอดขายหลักจากโฟลเดอร์ปัจจุบัน"""
+    """โหลดข้อมูลยอดขายหลักจากไฟล์ในโฟลเดอร์ปัจจุบัน"""
     folder_path = "."
     if not os.path.exists(folder_path):
         return pd.DataFrame()
     
     files = os.listdir(folder_path)
-    sales_files = [f for f in files if f.lower().endswith(('.csv', '.xlsx', '.xls')) and 'product' not in f.lower() and 'bplus' not in f.lower()]
+    all_data_files = [f for f in files if f.lower().endswith(('.csv', '.xlsx', '.xls'))]
     
+    if not all_data_files:
+        return pd.DataFrame()
+        
+    sales_files = [f for f in all_data_files if 'product' not in f.lower() and 'bplus' not in f.lower()]
+    if not sales_files:
+        sales_files = all_data_files
+
     dfs = []
     for f in sales_files:
         file_path = os.path.join(folder_path, f)
         try:
             if f.lower().endswith('.csv'):
                 try: df = pd.read_csv(file_path, encoding='utf-8-sig', low_memory=False)
-                except: df = pd.read_csv(file_path, encoding='tis-620', low_memory=False)
+                except:
+                    try: df = pd.read_csv(file_path, encoding='tis-620', low_memory=False)
+                    except: df = pd.read_csv(file_path, encoding='cp838', low_memory=False)
             else:
                 df = pd.read_excel(file_path)
             
-            df.columns = [str(c).strip().upper() for c in df.columns]
+            df.columns = [str(c).strip().replace('\ufeff', '') for c in df.columns]
             df = parse_date_column(df)
-            
-            sales_cols = ['TRD_B_AMT', 'DI_AMOUNT', 'NET_VAL', 'TOTAL_NET', 'GRANDTOTAL', 'TOTAL', 'AMOUNT', 'NET_AMOUNT', 'TOTAL_AMOUNT', 'SUM_AMOUNT', 'ยอดขาย', 'จำนวนเงิน']
-            s_col = next((c for c in sales_cols if c in df.columns), None)
-            df['GRANDTOTAL'] = clean_numeric(df[s_col]) if s_col else 0.0
-            
-            b_col = next((c for c in ['BRANCH', 'BRANCH_NAME', 'NAME', 'สาขา', 'NAME_TH', 'DI_BRANCH'] if c in df.columns), None)
-            df['NAME'] = df[b_col] if b_col else 'ไม่ระบุสาขา'
+            df['GRANDTOTAL'] = get_sales_amount_series(df)
+            df['NAME'] = get_branch_series(df)
             df['FILE_SOURCE'] = f
             
             dfs.append(df)
@@ -164,7 +263,7 @@ def load_all_sales_data():
     return pd.DataFrame()
 
 def load_bplus_data_from_folder():
-    """โหลดข้อมูลสำหรับ Tab สินค้าขายดี โดยค้นหาไฟล์ BPLUS"""
+    """โหลดข้อมูลสำหรับ Tab สินค้าขายดี"""
     folder_path = "."
     if not os.path.exists(folder_path):
         return pd.DataFrame()
@@ -291,13 +390,18 @@ st.markdown("<br>", unsafe_allow_html=True)
 # ==========================================
 def render_branch_visualizations(df_source):
     """วาดกราฟแท่งและกราฟโดนัทประจำสาขา"""
-    if df_source.empty:
-        st.info("ไม่พบข้อมูลยอดขาย (ภายใต้เงื่อนไขการกรองปัจจุบัน)")
+    if df_source.empty or df_source['GRANDTOTAL'].sum() == 0:
+        st.info("ไม่พบข้อมูลยอดขาย หรือยอดขายเป็น 0.00 (โปรดตรวจสอบไฟล์ข้อมูล)")
         return
 
     branch_summary = df_source.groupby('NAME')['GRANDTOTAL'].sum().reset_index()
+    branch_summary = branch_summary[branch_summary['GRANDTOTAL'] > 0]
     branch_summary = branch_summary.sort_values(by='GRANDTOTAL', ascending=False)
     
+    if branch_summary.empty:
+        st.info("ไม่พบข้อมูลยอดขายสำหรับสาขาที่เลือก")
+        return
+
     c_bar, c_donut = st.columns([1.2, 1])
     
     with c_bar:
@@ -310,7 +414,7 @@ def render_branch_visualizations(df_source):
             text='GRANDTOTAL', 
             color_discrete_map=branch_color_map
         )
-        fig_bar.update_traces(texttemplate='%{text:,.2f}', textposition='outside', cliponaxis=False)
+        fig_bar.update_traces(texttemplate='฿%{text:,.2f}', textposition='outside', cliponaxis=False)
         fig_bar.update_layout(
             xaxis_title="", 
             yaxis_title="ยอดขาย (บาท)", 
@@ -353,28 +457,19 @@ tab_branch, tab_trend, tab_table, tab_bestseller = st.tabs([
 
 # --- TAB 1: ยอดรวมสาขา ---
 with tab_branch:
-    if 'FILE_SOURCE' in df_filtered.columns:
-        df_sales_data = df_filtered[
-            df_filtered['FILE_SOURCE'].astype(str).str.lower().str.contains('sale data2568', na=False)
-        ]
-        if df_sales_data.empty:
-            df_sales_data = df_filtered[
-                df_filtered['FILE_SOURCE'].astype(str).str.lower().str.contains('sale', na=False)
-            ]
+    if not df_filtered.empty:
+        render_branch_visualizations(df_filtered)
     else:
-        df_sales_data = df_filtered
-        
-    if not df_sales_data.empty:
-        render_branch_visualizations(df_sales_data)
-    else:
-        st.info("ไม่พบข้อมูลจากไฟล์ Sale Data2568.csv (โปรดตรวจสอบชื่อไฟล์ใน repository หรือเงื่อนไขการกรอง)")
+        st.info("ไม่พบข้อมูลยอดขาย (ภายใต้เงื่อนไขการกรองปัจจุบัน)")
 
 # --- TAB 2: เทรนด์รายวัน ---
 with tab_trend:
     st.markdown("##### 📈 แนวโน้มยอดขายรายวัน")
     if not df_filtered.empty and 'Parsed_Date' in df_filtered.columns and not df_filtered['Parsed_Date'].isna().all():
-        daily_sales = df_filtered.groupby(df_filtered['Parsed_Date'].dt.date)['GRANDTOTAL'].sum().reset_index()
+        valid_dates = df_filtered[df_filtered['Parsed_Date'].notna()]
+        daily_sales = valid_dates.groupby(valid_dates['Parsed_Date'].dt.date)['GRANDTOTAL'].sum().reset_index()
         daily_sales.columns = ['วันที่', 'ยอดขาย']
+        daily_sales = daily_sales.sort_values('วันที่')
         
         fig_line = px.line(daily_sales, x='วันที่', y='ยอดขาย', markers=True, line_shape='linear')
         fig_line.update_traces(line_color='#2b9e3e', line_width=3)
@@ -387,10 +482,14 @@ with tab_trend:
 with tab_table:
     st.markdown("##### 📋 ตารางสรุปยอดขายแยกตามสาขา")
     if not df_filtered.empty:
-        branch_table = df_filtered.groupby('NAME')['GRANDTOTAL'].agg(['sum', 'count']).reset_index()
-        branch_table.columns = ['สาขา', 'ยอดขายรวม', 'จำนวนบิล']
+        branch_table = df_filtered.groupby('NAME').agg(
+            ยอดขายรวม=('GRANDTOTAL', 'sum'),
+            จำนวนบิล=('GRANDTOTAL', 'count')
+        ).reset_index()
         
-        branch_table['ยอดเฉลี่ยต่อบิล'] = branch_table['ยอดขายรวม'] / branch_table['จำนวนบิล']
+        branch_table['ยอดเฉลี่ยต่อบิล'] = branch_table.apply(
+            lambda r: r['ยอดขายรวม'] / r['จำนวนบิล'] if r['จำนวนบิล'] > 0 else 0.0, axis=1
+        )
         branch_table = branch_table.sort_values(by='ยอดขายรวม', ascending=False)
         branch_table.columns = ['สาขา', 'ยอดขายรวม (บาท)', 'จำนวนบิล', 'ยอดเฉลี่ยต่อบิล (บาท)']
         
@@ -433,7 +532,7 @@ with tab_bestseller:
     if not df_product.empty:
         df_p_filtered = df_product.copy()
         
-        if selected_branches and df_p_filtered.get('HAS_BRANCH_COL', [False])[0]:
+        if selected_branches and 'NAME' in df_p_filtered.columns:
             matched_p = df_p_filtered[df_p_filtered['NAME'].isin(selected_branches)]
             if not matched_p.empty:
                 df_p_filtered = matched_p
@@ -442,26 +541,6 @@ with tab_bestseller:
             matched_y = df_p_filtered[df_p_filtered['Year_BE'].isin(selected_years)]
             if not matched_y.empty:
                 df_p_filtered = matched_y
-
-        if quick_time != "ดูข้อมูลทั้งหมด" and 'Parsed_Date' in df_p_filtered.columns and not df_p_filtered['Parsed_Date'].isna().all():
-            current_time_th = datetime.utcnow() + timedelta(hours=7)
-            today_date = current_time_th.date()
-            matched_q = pd.DataFrame()
-            if quick_time == "วันนี้":
-                matched_q = df_p_filtered[df_p_filtered['Parsed_Date'].dt.date == today_date]
-            elif quick_time == "เมื่อวาน":
-                matched_q = df_p_filtered[df_p_filtered['Parsed_Date'].dt.date == (today_date - timedelta(days=1))]
-            elif quick_time == "7 วันล่าสุด":
-                matched_q = df_p_filtered[df_p_filtered['Parsed_Date'].dt.date >= (today_date - timedelta(days=7))]
-            elif quick_time == "30 วันล่าสุด":
-                matched_q = df_p_filtered[df_p_filtered['Parsed_Date'].dt.date >= (today_date - timedelta(days=30))]
-            elif quick_time == "เดือนนี้":
-                matched_q = df_p_filtered[(df_p_filtered['Parsed_Date'].dt.month == today_date.month) & (df_p_filtered['Parsed_Date'].dt.year == today_date.year)]
-            elif quick_time == "กำหนดเอง (เลือกปฏิทิน)" and start_date and end_date:
-                matched_q = df_p_filtered[(df_p_filtered['Parsed_Date'].dt.date >= start_date) & (df_p_filtered['Parsed_Date'].dt.date <= end_date)]
-            
-            if not matched_q.empty:
-                df_p_filtered = matched_q
 
         possible_p_cols = [
             'TRD_SH_NAME', 'DI_PRD_NAME', 'GOODS_NAME', 'DI_NAME', 'PRD_NAME', 'GOODSNAME', 
@@ -472,8 +551,9 @@ with tab_bestseller:
         p_col = next((c for c in possible_p_cols if c in df_p_filtered.columns), None)
 
         if not p_col:
-            st.warning("⚠️ ไม่พบชื่อคอลัมน์สินค้าอัตโนมัติ โปรดเลือกคอลัมน์ที่เป็น **ชื่อสินค้า** จากรายการด้านล่าง:")
-            p_col = st.selectbox("เลือกคอลัมน์ชื่อสินค้า:", options=[c for c in df_p_filtered.columns if c not in ['GRANDTOTAL', 'QTY', 'Year_BE', 'Parsed_Date', 'HAS_BRANCH_COL']])
+            str_cols = [c for c in df_p_filtered.columns if c not in ['GRANDTOTAL', 'QTY', 'Year_BE', 'Parsed_Date', 'HAS_BRANCH_COL']]
+            if str_cols:
+                p_col = str_cols[0]
 
         if p_col and not df_p_filtered.empty:
             top_products = df_p_filtered.groupby(p_col).agg(
@@ -520,7 +600,7 @@ with tab_bestseller:
                         paper_bgcolor='rgba(0,0,0,0)'
                     )
                     
-                    fig_pbar.update_xaxes(range=[0, max_sales * 1.22])
+                    fig_pbar.update_xaxes(range=[0, max_sales * 1.25])
                     st.plotly_chart(fig_pbar, use_container_width=True)
 
                 with col_b2:

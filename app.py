@@ -369,13 +369,18 @@ with tab_trend:
 with tab_table:
     st.markdown("##### 📋 ตารางสรุปยอดขายแยกตามสาขา")
     if not df_filtered.empty:
-        branch_table = df_filtered.groupby('NAME').agg(
-            ยอดขายรวม=('GRANDTOTAL', 'sum'),
-            จำนวนบิล=('GRANDTOTAL', 'count')
-        ).reset_index()
+        # คำนวณ sum และ count แบบมาตรฐานเพื่อป้องกัน KeyError ใน Python 3.14
+        branch_table = df_filtered.groupby('NAME')['GRANDTOTAL'].agg(['sum', 'count']).reset_index()
+        branch_table.columns = ['สาขา', 'ยอดขายรวม', 'จำนวนบิล']
+        
+        # คำนวณยอดเฉลี่ยต่อบิล
         branch_table['ยอดเฉลี่ยต่อบิล'] = branch_table['ยอดขายรวม'] / branch_table['จำนวนบิล']
+        
+        # เรียงลำดับจากยอดขายมากไปน้อย
+        branch_table = branch_table.sort_values(by='ยอดขายรวม', ascending=False)
+        
+        # เปลี่ยนชื่อคอลัมน์สำหรับแสดงผล
         branch_table.columns = ['สาขา', 'ยอดขายรวม (บาท)', 'จำนวนบิล', 'ยอดเฉลี่ยต่อบิล (บาท)']
-        branch_table = branch_table.sort_values(by='ยอดขายรวม (บาท)', ascending=False)
         
         st.dataframe(
             branch_table.style.format({

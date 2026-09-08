@@ -324,14 +324,22 @@ tab_branch, tab_trend, tab_table, tab_bestseller = st.tabs([
 ])
 
 with tab_branch:
+    # 1. ลองกรองเฉพาะไฟล์ยอดขาย (ถ้ามี)
     if 'FILE_SOURCE' in df_filtered.columns:
         df_sales_data = df_filtered[
-            df_filtered['FILE_SOURCE'].astype(str).str.lower().str.contains('sales data|sales_data', na=False)
+            df_filtered['FILE_SOURCE'].astype(str).str.lower().str.contains('sale', na=False)
         ]
+        # หากกรองแล้วไม่พบข้อมูล ให้ใช้ข้อมูลทั้งหมดที่มีทันที
+        if df_sales_data.empty:
+            df_sales_data = df_filtered
     else:
         df_sales_data = df_filtered
         
-    render_branch_visualizations(df_sales_data, "ไฟล์ sales data")
+    # 2. แสดงผลกราฟ
+    if not df_sales_data.empty:
+        render_branch_visualizations(df_sales_data)
+    else:
+        st.info("ไม่พบข้อมูลยอดขาย (ภายใต้เงื่อนไขการกรองปัจจุบัน)")
 
 with tab_trend:
     st.markdown("##### 📈 เทรนด์ยอดขายรายวัน")

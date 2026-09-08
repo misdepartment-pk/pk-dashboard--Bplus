@@ -457,9 +457,9 @@ with tab_bestseller:
             if not matched_q.empty:
                 df_p_filtered = matched_q
 
-        # Auto-detect Product Column Name (เพิ่มการรองรับโครงสร้างคอลัมน์ของ BPLUS)
+        # Auto-detect Product Column Name (เน้น TRD_SH_NAME เป็นอันดับแรก)
         possible_p_cols = [
-            'DI_PRD_NAME', 'GOODS_NAME', 'DI_NAME', 'PRD_NAME', 'GOODSNAME', 
+            'TRD_SH_NAME', 'DI_PRD_NAME', 'GOODS_NAME', 'DI_NAME', 'PRD_NAME', 'GOODSNAME', 
             'GOODS_DESC', 'ARTICLE_NAME', 'SHOW_NAME', 'PDATA_NAME', 'PRODUCT_NAME', 
             'P_NAME', 'NAME_1', 'ชื่อสินค้า', 'PRODUCT', 'ITEM_NAME', 'DESCR', 
             'ITEMNAME', 'DESCRIPTION', 'TITLE', 'สินค้า', 'รายการ', 'ชื่อรายการ', 'NAME_TH'

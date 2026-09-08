@@ -335,21 +335,25 @@ tab_branch, tab_trend, tab_table, tab_bestseller = st.tabs([
     "🍜 สินค้าขายดี"
 ])
 
-# --- TAB 1: ยอดรวมสาขา ---
+# --- TAB 1: ยอดรวมสาขา (ดึงเฉพาะ Sale Data2568.csv) ---
 with tab_branch:
     if 'FILE_SOURCE' in df_filtered.columns:
+        # กรองเฉพาะข้อมูลที่มาจากไฟล์ Sale Data2568.csv
         df_sales_data = df_filtered[
-            df_filtered['FILE_SOURCE'].astype(str).str.lower().str.contains('sale', na=False)
+            df_filtered['FILE_SOURCE'].astype(str).str.lower().str.contains('sale data2568', na=False)
         ]
+        # หากไม่พบไฟล์ตามชื่อเป้าหมาย ให้สำรองค้นหาไฟล์ที่มีคำว่า sale
         if df_sales_data.empty:
-            df_sales_data = df_filtered
+            df_sales_data = df_filtered[
+                df_filtered['FILE_SOURCE'].astype(str).str.lower().str.contains('sale', na=False)
+            ]
     else:
         df_sales_data = df_filtered
         
     if not df_sales_data.empty:
         render_branch_visualizations(df_sales_data)
     else:
-        st.info("ไม่พบข้อมูลยอดขาย (ภายใต้เงื่อนไขการกรองปัจจุบัน)")
+        st.info("ไม่พบข้อมูลจากไฟล์ Sale Data2568.csv (โปรดตรวจสอบชื่อไฟล์ใน repository หรือเงื่อนไขการกรอง)")
 
 # --- TAB 2: เทรนด์รายวัน ---
 with tab_trend:
@@ -369,17 +373,11 @@ with tab_trend:
 with tab_table:
     st.markdown("##### 📋 ตารางสรุปยอดขายแยกตามสาขา")
     if not df_filtered.empty:
-        # คำนวณ sum และ count แบบมาตรฐานเพื่อป้องกัน KeyError ใน Python 3.14
         branch_table = df_filtered.groupby('NAME')['GRANDTOTAL'].agg(['sum', 'count']).reset_index()
         branch_table.columns = ['สาขา', 'ยอดขายรวม', 'จำนวนบิล']
         
-        # คำนวณยอดเฉลี่ยต่อบิล
         branch_table['ยอดเฉลี่ยต่อบิล'] = branch_table['ยอดขายรวม'] / branch_table['จำนวนบิล']
-        
-        # เรียงลำดับจากยอดขายมากไปน้อย
         branch_table = branch_table.sort_values(by='ยอดขายรวม', ascending=False)
-        
-        # เปลี่ยนชื่อคอลัมน์สำหรับแสดงผล
         branch_table.columns = ['สาขา', 'ยอดขายรวม (บาท)', 'จำนวนบิล', 'ยอดเฉลี่ยต่อบิล (บาท)']
         
         st.dataframe(

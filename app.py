@@ -478,30 +478,24 @@ with tab_trend:
     else:
         st.info("ไม่พบข้อมูลวันที่ในการประมวลผลเทรนด์รายวัน")
 
-# --- TAB 3: ตารางตัวเลข (แก้ไขส่วนที่เกิด KeyError เรียบร้อย) ---
+# --- TAB 3: ตารางตัวเลข (แก้ไขใช้ Positional Renaming ป้องกัน KeyError 100%) ---
 with tab_table:
     st.markdown("##### 📋 ตารางสรุปยอดขายแยกตามสาขา")
     if not df_filtered.empty and 'GRANDTOTAL' in df_filtered.columns:
-        # จัดกลุ่มข้อมูลด้วย Named Aggregation
-        branch_table = df_filtered.groupby('NAME', as_index=False).agg(
-            ยอดขายรวม=('GRANDTOTAL', 'sum'),
-            จำนวนบิล=('GRANDTOTAL', 'count')
-        )
+        # 1. จัดกลุ่มและสร้าง DataFrame ดั้งเดิม
+        branch_table = df_filtered.groupby('NAME')['GRANDTOTAL'].agg(['sum', 'count']).reset_index()
         
-        # คำนวณยอดเฉลี่ยต่อบิลแบบ Vectorized
+        # 2. บังคับเปลี่ยนชื่อคอลัมน์ตามลำดับตำแหน่งเพื่อป้องกัน KeyError จากปัญหา Encode ภาษาไทย
+        branch_table.columns = ['สาขา', 'ยอดขายรวม (บาท)', 'จำนวนบิล']
+        
+        # 3. คำนวณยอดเฉลี่ยต่อบิล
         branch_table['ยอดเฉลี่ยต่อบิล (บาท)'] = 0.0
         mask = branch_table['จำนวนบิล'] > 0
         branch_table.loc[mask, 'ยอดเฉลี่ยต่อบิล (บาท)'] = (
-            branch_table.loc[mask, 'ยอดขายรวม'] / branch_table.loc[mask, 'จำนวนบิล']
+            branch_table.loc[mask, 'ยอดขายรวม (บาท)'] / branch_table.loc[mask, 'จำนวนบิล']
         )
         
-        # เปลี่ยนชื่อคอลัมน์ให้แสดงผลสวยงาม
-        branch_table = branch_table.rename(columns={
-            'NAME': 'สาขา',
-            'ยอดขายรวม': 'ยอดขายรวม (บาท)'
-        })
-        
-        # เรียงลำดับจากยอดขายรวมมากไปน้อย
+        # 4. เรียงลำดับตามยอดขายรวม
         branch_table = branch_table.sort_values(by='ยอดขายรวม (บาท)', ascending=False)
         
         st.dataframe(
@@ -567,10 +561,7 @@ with tab_bestseller:
                 p_col = str_cols[0]
 
         if p_col and not df_p_filtered.empty:
-            top_products = df_p_filtered.groupby(p_col).agg(
-                total_sales=('GRANDTOTAL', 'sum'),
-                total_qty=('QTY', 'sum')
-            ).reset_index()
+            top_products = df_p_filtered.groupby(p_col)[['GRANDTOTAL', 'QTY']].sum().reset_index()
             top_products.columns = ['ชื่อสินค้า', 'ยอดขายรวม', 'จำนวนที่ขาย']
             top_products = top_products[top_products['ยอดขายรวม'] > 0]
             

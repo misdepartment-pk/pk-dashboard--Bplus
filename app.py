@@ -89,7 +89,7 @@ def process_product_dataframe(df):
     df = parse_date_column(df)
     
     # ตรวจสอบคอลัมน์สาขา
-    branch_cols = ['BRANCH', 'BRANCH_NAME', 'NAME', 'สาขา', 'NAME_TH']
+    branch_cols = ['BRANCH', 'BRANCH_NAME', 'NAME', 'สาขา', 'NAME_TH', 'DI_BRANCH']
     b_col = next((c for c in branch_cols if c in df.columns), None)
     if b_col:
         df['NAME'] = df[b_col]
@@ -97,15 +97,15 @@ def process_product_dataframe(df):
     else:
         df['HAS_BRANCH_COL'] = False
 
-    # ตรวจสอบยอดขายรวม
-    sales_cols = ['GRANDTOTAL', 'TOTAL', 'AMOUNT', 'NET_AMOUNT', 'NET_TOTAL', 'TOTAL_AMOUNT', 'SUM_AMOUNT', 'ยอดขาย', 'จำนวนเงิน']
+    # ตรวจสอบคอลัมน์ยอดขายรวม (รองรับ BPLUS: DI_AMOUNT, NET_VAL, AMOUNT ฯลฯ)
+    sales_cols = ['DI_AMOUNT', 'NET_VAL', 'TOTAL_NET', 'GRANDTOTAL', 'TOTAL', 'AMOUNT', 'NET_AMOUNT', 'TOTAL_AMOUNT', 'SUM_AMOUNT', 'ยอดขาย', 'จำนวนเงิน']
     s_col = next((c for c in sales_cols if c in df.columns), None)
     df['GRANDTOTAL'] = pd.to_numeric(df[s_col], errors='coerce').fillna(0) if s_col else 0.0
 
-    # ตรวจสอบจำนวน
-    qty_cols = ['QTY', 'QUANTITY', 'AMOUNT_QTY', 'TOTAL_QTY', 'จำนวน']
+    # ตรวจสอบคอลัมน์จำนวน (รองรับ BPLUS: DI_QTY, QTY ฯลฯ)
+    qty_cols = ['DI_QTY', 'QTY', 'QUANTITY', 'AMOUNT_QTY', 'TOTAL_QTY', 'จำนวน']
     q_col = next((c for c in qty_cols if c in df.columns), None)
-    df['QTY'] = pd.to_numeric(df[q_col], errors='coerce').fillna(0) if q_col else 0.0
+    df['QTY'] = pd.to_numeric(df[q_col], errors='coerce').fillna(0) if q_col else 1.0
 
     return df
 
@@ -457,9 +457,14 @@ with tab_bestseller:
             if not matched_q.empty:
                 df_p_filtered = matched_q
 
-        # Auto-detect Product Column Name
-        possible_p_cols = ['PDATA_NAME', 'PRODUCT_NAME', 'P_NAME', 'NAME_1', 'ชื่อสินค้า', 'PRODUCT', 'ITEM_NAME', 'DESCR', 'ITEMNAME', 'PROD_NAME', 'DESCRIPTION', 'TITLE', 'GOODS_NAME', 'สินค้า', 'รายการ', 'ชื่อรายการ', 'NAME_TH', 'NAME']
-        p_col = next((c for c in possible_p_cols if c in df_p_filtered.columns and c != 'NAME' or (c == 'NAME' and not df_p_filtered.get('HAS_BRANCH_COL', [False])[0])), None)
+        # Auto-detect Product Column Name (เพิ่มการรองรับโครงสร้างคอลัมน์ของ BPLUS)
+        possible_p_cols = [
+            'DI_PRD_NAME', 'GOODS_NAME', 'DI_NAME', 'PRD_NAME', 'GOODSNAME', 
+            'GOODS_DESC', 'ARTICLE_NAME', 'SHOW_NAME', 'PDATA_NAME', 'PRODUCT_NAME', 
+            'P_NAME', 'NAME_1', 'ชื่อสินค้า', 'PRODUCT', 'ITEM_NAME', 'DESCR', 
+            'ITEMNAME', 'DESCRIPTION', 'TITLE', 'สินค้า', 'รายการ', 'ชื่อรายการ', 'NAME_TH'
+        ]
+        p_col = next((c for c in possible_p_cols if c in df_p_filtered.columns), None)
 
         if not p_col:
             st.warning("⚠️ ไม่พบชื่อคอลัมน์สินค้าอัตโนมัติ โปรดเลือกคอลัมน์ที่เป็น **ชื่อสินค้า** จากรายการด้านล่าง:")

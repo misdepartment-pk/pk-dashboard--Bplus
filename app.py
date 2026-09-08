@@ -97,13 +97,13 @@ def process_product_dataframe(df):
     else:
         df['HAS_BRANCH_COL'] = False
 
-    # ตรวจสอบคอลัมน์ยอดขายรวม (รองรับ BPLUS: DI_AMOUNT, NET_VAL, AMOUNT ฯลฯ)
-    sales_cols = ['DI_AMOUNT', 'NET_VAL', 'TOTAL_NET', 'GRANDTOTAL', 'TOTAL', 'AMOUNT', 'NET_AMOUNT', 'TOTAL_AMOUNT', 'SUM_AMOUNT', 'ยอดขาย', 'จำนวนเงิน']
+    # ตรวจสอบคอลัมน์ยอดขายรวม (เน้น TRD_B_AMT เป็นอันดับแรก)
+    sales_cols = ['TRD_B_AMT', 'DI_AMOUNT', 'NET_VAL', 'TOTAL_NET', 'GRANDTOTAL', 'TOTAL', 'AMOUNT', 'NET_AMOUNT', 'TOTAL_AMOUNT', 'SUM_AMOUNT', 'ยอดขาย', 'จำนวนเงิน']
     s_col = next((c for c in sales_cols if c in df.columns), None)
     df['GRANDTOTAL'] = pd.to_numeric(df[s_col], errors='coerce').fillna(0) if s_col else 0.0
 
-    # ตรวจสอบคอลัมน์จำนวน (รองรับ BPLUS: DI_QTY, QTY ฯลฯ)
-    qty_cols = ['DI_QTY', 'QTY', 'QUANTITY', 'AMOUNT_QTY', 'TOTAL_QTY', 'จำนวน']
+    # ตรวจสอบคอลัมน์จำนวน (รองรับ BPLUS: TRD_QTY, DI_QTY, QTY ฯลฯ)
+    qty_cols = ['TRD_QTY', 'DI_QTY', 'QTY', 'QUANTITY', 'AMOUNT_QTY', 'TOTAL_QTY', 'จำนวน']
     q_col = next((c for c in qty_cols if c in df.columns), None)
     df['QTY'] = pd.to_numeric(df[q_col], errors='coerce').fillna(0) if q_col else 1.0
 
@@ -132,7 +132,7 @@ def load_all_sales_data():
             df = parse_date_column(df)
             
             # ตรวจหาคอลัมน์ยอดขายและบิล
-            s_col = next((c for c in ['GRANDTOTAL', 'TOTAL', 'NET_AMOUNT', 'ยอดขาย', 'จำนวนเงิน'] if c in df.columns), None)
+            s_col = next((c for c in ['TRD_B_AMT', 'GRANDTOTAL', 'TOTAL', 'NET_AMOUNT', 'ยอดขาย', 'จำนวนเงิน'] if c in df.columns), None)
             df['GRANDTOTAL'] = pd.to_numeric(df[s_col], errors='coerce').fillna(0) if s_col else 0.0
             
             b_col = next((c for c in ['BRANCH', 'BRANCH_NAME', 'NAME', 'สาขา'] if c in df.columns), None)

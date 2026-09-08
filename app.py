@@ -183,6 +183,11 @@ def parse_date_column(df):
                     except: return pd.NaT
                 return val
             
+            if isinstance(val, (int, float)):
+                if 30000 < val < 60000:
+                    try: return pd.to_datetime(val, unit='D', origin='1899-12-30')
+                    except: pass
+            
             s = str(val).strip()
             if s.lower() in ['nan', 'none', 'nat', '', 'null']:
                 return pd.NaT
@@ -370,9 +375,13 @@ elif quick_time == "30 วันล่าสุด":
 elif quick_time == "เดือนนี้":
     filter_start_date, filter_end_date = today_date.replace(day=1), today_date
 elif quick_time == "กำหนดช่วงวันที่เอง":
-    has_date_data = not df_sales.empty and 'Parsed_Date' in df_sales.columns and not df_sales['Parsed_Date'].isna().all()
-    min_d = df_sales['Parsed_Date'].min().date() if has_date_data else today_date
-    max_d = df_sales['Parsed_Date'].max().date() if has_date_data else today_date
+    has_date_data = not df_sales.empty and 'Parsed_Date' in df_sales.columns and df_sales['Parsed_Date'].notna().any()
+    if has_date_data:
+        valid_dates_series = df_sales['Parsed_Date'].dropna()
+        min_d = valid_dates_series.min().date()
+        max_d = valid_dates_series.max().date()
+    else:
+        min_d, max_d = today_date, today_date
     
     col_d1, col_d2 = st.sidebar.columns(2)
     with col_d1:
@@ -391,9 +400,11 @@ if not df_filtered.empty:
         df_filtered = df_filtered[df_filtered['Year_BE'].isin(selected_years)]
         
     if filter_start_date and filter_end_date and 'Parsed_Date' in df_filtered.columns:
+        start_ts = pd.to_datetime(filter_start_date)
+        end_ts = pd.to_datetime(filter_end_date) + pd.Timedelta(days=1) - pd.Timedelta(nanoseconds=1)
         df_filtered = df_filtered[
-            (df_filtered['Parsed_Date'].dt.date >= filter_start_date) & 
-            (df_filtered['Parsed_Date'].dt.date <= filter_end_date)
+            (df_filtered['Parsed_Date'] >= start_ts) & 
+            (df_filtered['Parsed_Date'] <= end_ts)
         ]
 
 # ==========================================
@@ -493,9 +504,10 @@ with tab_branch:
 # --- TAB 2: เทรนด์รายวัน ---
 with tab_trend:
     st.markdown("##### 📈 แนวโน้มยอดขายรายวัน")
-    if not df_filtered.empty and 'Parsed_Date' in df_filtered.columns and not df_filtered['Parsed_Date'].isna().all():
-        valid_dates = df_filtered[df_filtered['Parsed_Date'].notna()]
-        daily_sales = valid_dates.groupby(valid_dates['Parsed_Date'].dt.date)['GRANDTOTAL'].sum().reset_index()
+    if not df_filtered.empty and 'Parsed_Date' in df_filtered.columns and df_filtered['Parsed_Date'].notna().any():
+        valid_dates = df_filtered[df_filtered['Parsed_Date'].notna()].copy()
+        valid_dates['Date_Str'] = valid_dates['Parsed_Date'].dt.strftime('%Y-%m-%d')
+        daily_sales = valid_dates.groupby('Date_Str')['GRANDTOTAL'].sum().reset_index()
         daily_sales.columns = ['วันที่', 'ยอดขาย']
         daily_sales = daily_sales.sort_values('วันที่')
         
@@ -570,9 +582,11 @@ with tab_bestseller:
             df_p_filtered = df_p_filtered[df_p_filtered['Year_BE'].isin(selected_years)]
 
         if filter_start_date and filter_end_date and 'Parsed_Date' in df_p_filtered.columns:
+            start_ts = pd.to_datetime(filter_start_date)
+            end_ts = pd.to_datetime(filter_end_date) + pd.Timedelta(days=1) - pd.Timedelta(nanoseconds=1)
             df_p_filtered = df_p_filtered[
-                (df_p_filtered['Parsed_Date'].dt.date >= filter_start_date) & 
-                (df_p_filtered['Parsed_Date'].dt.date <= filter_end_date)
+                (df_p_filtered['Parsed_Date'] >= start_ts) & 
+                (df_p_filtered['Parsed_Date'] <= end_ts)
             ]
 
         possible_p_cols = [

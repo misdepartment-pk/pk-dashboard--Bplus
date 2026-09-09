@@ -65,7 +65,7 @@ branch_color_map = {
 }
 
 def clean_numeric(series):
-    """ทำความสะอาดข้อมูลตัวเลข ลบจุลภาค (,), ฿, ช่องว่าง และแปลงเป็น float"""
+    """ทำความสะอาดข้อมูลตัวเลข"""
     if series is None:
         return pd.Series(0.0)
     
@@ -86,7 +86,7 @@ def clean_numeric(series):
 def get_sales_amount_series(df):
     """ค้นหาคอลัมน์ยอดขายอย่างฉลาดและดึงข้อมูลออกมา"""
     candidates = [
-        'GRANDTOTAL_CUSTOM', 'PDATA_NET_AMT', # <-- ลำดับความสำคัญสูงสุดสำหรับไฟล์ Sale Data2568
+        'GRANDTOTAL_CUSTOM', 'PDATA_NET_AMT', 
         'TRD_B_AMT', 'TRD_B_AMNT', 'TRD_AMOUNT', 'TRD_AMT', 'TRD_NET', 'TRD_VAL', 'TRD_G_AMT',
         'DI_AMOUNT', 'DI_NET_VAL', 'DI_AMOUNT_NET', 'DI_TOTAL',
         'NET_VAL', 'NET_AMT', 'NET_AMOUNT', 'NETVAL', 'NET_BAHT', 'NET',
@@ -111,7 +111,7 @@ def get_sales_amount_series(df):
 def get_branch_series(df):
     """ค้นหาคอลัมน์ชื่อสาขา"""
     branch_candidates = [
-        'BRANCH_CUSTOM', 'NAME', # <-- ลำดับความสำคัญสูงสุด
+        'BRANCH_CUSTOM', 'NAME', 
         'BRANCH', 'BRANCH_NAME', 'NAME_TH', 'DI_BRANCH', 'BRANCHNAME',
         'สาขา', 'ชื่อสาขา', 'สถานี', 'SHOP', 'SHOP_NAME', 'STORE'
     ]
@@ -126,9 +126,9 @@ def get_branch_series(df):
     return pd.Series('ไม่ระบุสาขา', index=df.index)
 
 def parse_date_column(df):
-    """ค้นหาและแปลงคอลัมน์วันที่ (รองรับ PDATA_CODE และฟอร์แมตวันที่แบบตัวเลขติดกัน 8 หลัก)"""
+    """ค้นหาและแปลงคอลัมน์วันที่"""
     date_cols_keywords = [
-        'DOC_DATE_CUSTOM', # <-- ลำดับความสำคัญสูงสุดสำหรับ PDATA_CODE
+        'DOC_DATE_CUSTOM',
         'DOC_DATE', 'DOCDATE', 'DI_DATE', 'TRD_DATE', 'TRAN_DATE', 'DATE', 'DATETIME', 
         'วันที่', 'วัน/เดือน/ปี', 'DOC_DT', 'CREATED_AT', 'SALE_DATE', 'SDATE', 'D_DATE', 
         'TR_DATE', 'DATE_TIME', 'CREATE_DATE'
@@ -157,16 +157,13 @@ def parse_date_column(df):
             if s.lower() in ['nan', 'none', 'nat', '', 'null']:
                 return pd.NaT
                 
-            # รองรับรูปแบบวันที่เป็นตัวเลข 8 หลัก (YYYYMMDD หรือ DDMMYYYY) ที่มาจาก PDATA_CODE
             if len(s) == 8 and s.isdigit():
-                # ตรวจสอบรูปแบบ YYYYMMDD
                 yr1 = int(s[:4])
                 if 1900 <= yr1 <= 3000:
                     yr = yr1
                     if yr > 2400: yr -= 543
                     try: return datetime(yr, int(s[4:6]), int(s[6:8]))
                     except: pass
-                # ตรวจสอบรูปแบบ DDMMYYYY
                 yr2 = int(s[4:8])
                 if 1900 <= yr2 <= 3000:
                     yr = yr2
@@ -203,7 +200,7 @@ def parse_date_column(df):
     return df
 
 def load_all_sales_data():
-    """โหลดข้อมูลยอดขายหลักจากไฟล์ในโฟลเดอร์ปัจจุบัน"""
+    """โหลดข้อมูลยอดขายหลัก (ยอดรวม) จากไฟล์ในโฟลเดอร์ปัจจุบัน"""
     folder_path = "."
     if not os.path.exists(folder_path):
         return pd.DataFrame()
@@ -233,10 +230,6 @@ def load_all_sales_data():
             df.columns = [str(c).strip().replace('\ufeff', '') for c in df.columns]
             col_map_upper = {c.upper(): c for c in df.columns}
             
-            # -------------------------------------------------------------------
-            # ✅ ระบบ MAP ข้อมูลพิเศษสำหรับไฟล์ "Sale Data2568"
-            # ใช้ PDATA_CODE เป็นวันที่, PDATA_NET_AMT เป็นยอดขาย, NAME เป็นสาขา
-            # -------------------------------------------------------------------
             if 'PDATA_NET_AMT' in col_map_upper and 'PDATA_CODE' in col_map_upper and 'NAME' in col_map_upper:
                 df['GRANDTOTAL_CUSTOM'] = df[col_map_upper['PDATA_NET_AMT']]
                 df['DOC_DATE_CUSTOM'] = df[col_map_upper['PDATA_CODE']]
@@ -256,25 +249,49 @@ def load_all_sales_data():
     return pd.DataFrame()
 
 def process_product_dataframe(df):
-    """ทำความสะอาดข้อมูลสินค้า BPLUS"""
+    """ทำความสะอาดข้อมูลสินค้า BPLUS และตั้งค่า Column ตามที่ผู้ใช้กำหนด"""
     df.columns = [str(c).strip().replace('\ufeff', '') for c in df.columns]
+    col_map_upper = {c.upper(): c for c in df.columns}
+    
+    # -------------------------------------------------------------------
+    # ✅ ระบบ MAP ข้อมูลพิเศษสำหรับไฟล์ "BPLUS" (ตามที่ผู้ใช้ระบุ)
+    # -------------------------------------------------------------------
+    if 'DI_DATE' in col_map_upper:
+        df['DOC_DATE_CUSTOM'] = df[col_map_upper['DI_DATE']]
+    if 'TRD_SH_NAME' in col_map_upper:
+        df['PRODUCT_NAME_CUSTOM'] = df[col_map_upper['TRD_SH_NAME']]
+    if 'TRD_Q_FREE' in col_map_upper:
+        df['QTY_CUSTOM'] = clean_numeric(df[col_map_upper['TRD_Q_FREE']])
+    if 'NAME' in col_map_upper:
+        df['BRANCH_CUSTOM'] = df[col_map_upper['NAME']]
+    if 'TRD_B_AMT' in col_map_upper:
+        df['GRANDTOTAL_CUSTOM'] = df[col_map_upper['TRD_B_AMT']]
+    if 'TRD_UTQNAME' in col_map_upper:
+        df['UNIT_CUSTOM'] = df[col_map_upper['TRD_UTQNAME']].astype(str).str.strip()
+    else:
+        df['UNIT_CUSTOM'] = 'ไม่ระบุ'
+        
+    # ใช้ฟังก์ชันดึงวันที่และแปลง
     df = parse_date_column(df)
     df['NAME'] = get_branch_series(df)
     df['GRANDTOTAL'] = get_sales_amount_series(df)
     
-    qty_candidates = ['TRD_QTY', 'DI_QTY', 'QTY', 'QUANTITY', 'AMOUNT_QTY', 'TOTAL_QTY', 'จำนวน']
-    df_cols_upper = {str(c).strip().replace('\ufeff', '').upper(): c for c in df.columns}
-    df['QTY'] = 1.0
-    for col in qty_candidates:
-        col_u = col.upper()
-        if col_u in df_cols_upper:
-            df['QTY'] = clean_numeric(df[df_cols_upper[col_u]])
-            break
+    # กำหนด QTY
+    if 'QTY_CUSTOM' in df.columns:
+        df['QTY'] = df['QTY_CUSTOM']
+    else:
+        qty_candidates = ['TRD_QTY', 'DI_QTY', 'QTY', 'QUANTITY', 'AMOUNT_QTY', 'TOTAL_QTY', 'จำนวน']
+        df['QTY'] = 1.0
+        for col in qty_candidates:
+            col_u = col.upper()
+            if col_u in col_map_upper:
+                df['QTY'] = clean_numeric(df[col_map_upper[col_u]])
+                break
 
     return df
 
 def load_bplus_data_from_folder():
-    """โหลดข้อมูลสำหรับ Tab สินค้าขายดี"""
+    """โหลดข้อมูลสำหรับ Tab สินค้าขายดี โดยค้นหาไฟล์ที่มีคำว่า BPLUS"""
     folder_path = "."
     if not os.path.exists(folder_path):
         return pd.DataFrame()
@@ -430,7 +447,6 @@ st.markdown("<br>", unsafe_allow_html=True)
 # 6. VISUALIZATION FUNCTIONS
 # ==========================================
 def render_branch_visualizations(df_source):
-    """วาดกราฟแท่งและกราฟโดนัทประจำสาขา"""
     if df_source.empty or df_source['GRANDTOTAL'].sum() == 0:
         st.info("ไม่พบข้อมูลยอดขายตามเงื่อนไขการกรองที่เลือก")
         return
@@ -552,12 +568,12 @@ with tab_table:
 
 # --- TAB 4: สินค้าขายดี ---
 with tab_bestseller:
-    st.markdown("##### 🍜 รายงานสินค้าขายดี")
+    st.markdown("##### 🍜 รายงานสินค้าขายดี (ดึงข้อมูลจากไฟล์ BPLUS)")
     
     df_product = load_bplus_data_from_folder()
     
     if df_product.empty:
-        st.info("💡 หากไม่พบไฟล์ BPLUS ในระบบ สามารถเลือกอัปโหลดไฟล์ BPLUS (.csv หรือ .xlsx) ตรงนี้เพื่อประมวลผลทันทีได้ครับ")
+        st.info("💡 ไม่พบไฟล์ BPLUS ในระบบ สามารถเลือกอัปโหลดไฟล์ BPLUS ตรงนี้เพื่อประมวลผลทันทีได้ครับ")
         uploaded_pfile = st.file_uploader(
             "📂 เลือกอัปโหลดไฟล์ BPLUS (.csv หรือ .xlsx):", 
             type=['csv', 'xlsx', 'xls'],
@@ -577,12 +593,15 @@ with tab_bestseller:
     if not df_product.empty:
         df_p_filtered = df_product.copy()
         
+        # กรองสาขา
         if selected_branches and 'NAME' in df_p_filtered.columns:
             df_p_filtered = df_p_filtered[df_p_filtered['NAME'].isin(selected_branches)]
         
+        # กรองปี พ.ศ.
         if selected_years and 'Year_BE' in df_p_filtered.columns:
             df_p_filtered = df_p_filtered[df_p_filtered['Year_BE'].isin(selected_years)]
 
+        # กรองวันที่
         if quick_time != "ทั้งหมดในระบบ" and filter_start_date and filter_end_date and 'Parsed_Date' in df_p_filtered.columns and df_p_filtered['Parsed_Date'].notna().any():
             start_ts = pd.to_datetime(filter_start_date)
             end_ts = pd.to_datetime(filter_end_date) + pd.Timedelta(days=1) - pd.Timedelta(nanoseconds=1)
@@ -593,13 +612,12 @@ with tab_bestseller:
                 (df_p_filtered['Parsed_Date'] <= end_ts)
             ]
 
-        possible_p_cols = [
-            'TRD_SH_NAME', 'DI_PRD_NAME', 'GOODS_NAME', 'DI_NAME', 'PRD_NAME', 'GOODSNAME', 
-            'GOODS_DESC', 'ARTICLE_NAME', 'SHOW_NAME', 'PDATA_NAME', 'PRODUCT_NAME', 
-            'P_NAME', 'NAME_1', 'ชื่อสินค้า', 'PRODUCT', 'ITEM_NAME', 'DESCR', 
-            'ITEMNAME', 'DESCRIPTION', 'TITLE', 'สินค้า', 'รายการ', 'ชื่อรายการ', 'NAME_TH'
-        ]
-        p_col = next((c for c in possible_p_cols if c in df_p_filtered.columns), None)
+        # ดึงชื่อสินค้า
+        p_col = 'PRODUCT_NAME_CUSTOM' if 'PRODUCT_NAME_CUSTOM' in df_p_filtered.columns else None
+        
+        if not p_col:
+            possible_p_cols = ['TRD_SH_NAME', 'DI_PRD_NAME', 'GOODS_NAME', 'DI_NAME', 'PRD_NAME', 'GOODSNAME', 'GOODS_DESC', 'ARTICLE_NAME', 'SHOW_NAME', 'PDATA_NAME', 'PRODUCT_NAME', 'P_NAME', 'NAME_1', 'ชื่อสินค้า', 'PRODUCT', 'ITEM_NAME', 'DESCR', 'ITEMNAME', 'DESCRIPTION', 'TITLE', 'สินค้า', 'รายการ', 'ชื่อรายการ', 'NAME_TH']
+            p_col = next((c for c in possible_p_cols if c in df_p_filtered.columns), None)
 
         if not p_col:
             str_cols = [c for c in df_p_filtered.columns if c not in ['GRANDTOTAL', 'QTY', 'Year_BE', 'Parsed_Date', 'HAS_BRANCH_COL']]
@@ -607,10 +625,18 @@ with tab_bestseller:
                 p_col = str_cols[0]
 
         if p_col and not df_p_filtered.empty:
-            top_products = df_p_filtered.groupby(p_col)[['GRANDTOTAL', 'QTY']].sum().reset_index()
-            top_products.columns = ['ชื่อสินค้า', 'ยอดขายรวม', 'จำนวนที่ขาย']
-            top_products = top_products[top_products['ยอดขายรวม'] > 0]
+            # เพิ่มคอลัมน์หน่วย
+            u_col = 'UNIT_CUSTOM' if 'UNIT_CUSTOM' in df_p_filtered.columns else None
             
+            if u_col:
+                top_products = df_p_filtered.groupby([p_col, u_col])[['GRANDTOTAL', 'QTY']].sum().reset_index()
+                top_products.columns = ['ชื่อสินค้า', 'หน่วย', 'ยอดขายรวม', 'จำนวนที่ขาย']
+            else:
+                top_products = df_p_filtered.groupby(p_col)[['GRANDTOTAL', 'QTY']].sum().reset_index()
+                top_products.columns = ['ชื่อสินค้า', 'ยอดขายรวม', 'จำนวนที่ขาย']
+                top_products.insert(1, 'หน่วย', 'ไม่ระบุ')
+            
+            top_products = top_products[top_products['ยอดขายรวม'] > 0]
             top_products = top_products.sort_values(by='จำนวนที่ขาย', ascending=False).head(20).reset_index(drop=True)
             top_products.insert(0, 'ลำดับ', range(1, len(top_products) + 1))
             

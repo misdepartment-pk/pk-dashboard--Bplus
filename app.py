@@ -125,6 +125,24 @@ def get_branch_series(df):
             
     return pd.Series('ไม่ระบุสาขา', index=df.index)
 
+def get_bill_series(df):
+    """ค้นหาคอลัมน์เลขที่บิล DI_REF"""
+    bill_candidates = [
+        'DI_REF', 'DOC_NO', 'DI_NO', 'BILL_NO', 'INVOICE_NO', 'REF_NO', 'TRD_REF',
+        'เลขที่บิล', 'เลขที่เอกสาร', 'เลขที่'
+    ]
+    df_cols_upper = {str(c).strip().replace('\ufeff', '').upper(): c for c in df.columns}
+    
+    for col in bill_candidates:
+        col_u = col.upper()
+        if col_u in df_cols_upper:
+            real_col = df_cols_upper[col_u]
+            s = df[real_col].astype(str).str.strip()
+            s = s.replace(['nan', 'None', 'NaN', 'null', ''], None)
+            return s
+            
+    return pd.Series(None, index=df.index, dtype='object')
+
 def parse_date_column(df):
     """ค้นหาและแปลงคอลัมน์วันที่"""
     date_cols_keywords = [
@@ -238,6 +256,7 @@ def load_all_sales_data():
             df = parse_date_column(df)
             df['GRANDTOTAL'] = get_sales_amount_series(df)
             df['NAME'] = get_branch_series(df)
+            df['BILL_NO'] = get_bill_series(df)
             df['FILE_SOURCE'] = f
             
             dfs.append(df)
@@ -249,13 +268,10 @@ def load_all_sales_data():
     return pd.DataFrame()
 
 def process_product_dataframe(df):
-    """ทำความสะอาดข้อมูลสินค้า BPLUS และตั้งค่า Column ตามที่ผู้ใช้กำหนด"""
+    """ทำความสะอาดข้อมูลสินค้า BPLUS และตั้งค่า Column"""
     df.columns = [str(c).strip().replace('\ufeff', '') for c in df.columns]
     col_map_upper = {c.upper(): c for c in df.columns}
     
-    # -------------------------------------------------------------------
-    # ✅ ระบบ MAP ข้อมูลพิเศษสำหรับไฟล์ "BPLUS" (ตามที่ผู้ใช้ระบุ)
-    # -------------------------------------------------------------------
     if 'DI_DATE' in col_map_upper:
         df['DOC_DATE_CUSTOM'] = df[col_map_upper['DI_DATE']]
     if 'TRD_SH_NAME' in col_map_upper:
@@ -271,20 +287,11 @@ def process_product_dataframe(df):
     else:
         df['UNIT_CUSTOM'] = 'ไม่ระบุ'
         
-    # เพิ่มคอลัมน์ DI_REF สำหรับนับบิล
-    if 'DI_REF' in col_map_upper:
-        df['BILL_NO_CUSTOM'] = df[col_map_upper['DI_REF']].astype(str).str.strip()
-        # เคลียร์ค่าว่างเพื่อไม่ให้นับผิด
-        df.loc[df['BILL_NO_CUSTOM'].str.lower().isin(['nan', 'none', '']), 'BILL_NO_CUSTOM'] = None
-    else:
-        df['BILL_NO_CUSTOM'] = None
-        
-    # ใช้ฟังก์ชันดึงวันที่และแปลง
     df = parse_date_column(df)
     df['NAME'] = get_branch_series(df)
     df['GRANDTOTAL'] = get_sales_amount_series(df)
+    df['BILL_NO'] = get_bill_series(df)
     
-    # กำหนด QTY
     if 'QTY_CUSTOM' in df.columns:
         df['QTY'] = df['QTY_CUSTOM']
     else:
@@ -299,7 +306,7 @@ def process_product_dataframe(df):
     return df
 
 def load_bplus_data_from_folder():
-    """โหลดข้อมูลสำหรับ Tab สินค้าขายดี โดยค้นหาไฟล์ที่มีคำว่า BPLUS"""
+    """โหลดข้อมูลสำหรับ Tab สินค้าขายดี โดยค้นหาไฟล์ BPLUS"""
     folder_path = "."
     if not os.path.exists(folder_path):
         return pd.DataFrame()
@@ -437,9 +444,16 @@ if not df_filtered.empty:
 # ==========================================
 # 5. MAIN METRICS DISPLAY
 # ==========================================
-total_sales = df_filtered['GRANDTOTAL'].sum() if not df_filtered.empty else 0.0
-total_bills = len(df_filtered) if not df_filtered.empty else 0
-avg_per_bill = total_sales / total_bills if total_bills > 0 else 0.0
+if not df_filtered.empty:
+    total_sales = df_filtered['GRANDTOTAL'].sum()
+    # ตรวจสอบการนับบิลด้วย DI_REF แบบไม่ซ้ำ (Unique)
+    if 'BILL_NO' in df_filtered.columns and df_filtered['BILL_NO'].notna().any():
+        total_bills = df_filtered['BILL_NO'].nunique()
+    else:
+        total_bills = len(df_filtered)
+    avg_per_bill = total_sales / total_bills if total_bills > 0 else 0.0
+else:
+    total_sales, total_bills, avg_per_bill = 0.0, 0, 0.0
 
 col_m1, col_m2, col_m3 = st.columns(3)
 with col_m1:
@@ -551,8 +565,19 @@ with tab_trend:
 with tab_table:
     st.markdown("##### 📋 ตารางสรุปยอดขายแยกตามสาขา")
     if not df_filtered.empty and 'GRANDTOTAL' in df_filtered.columns:
-        branch_table = df_filtered.groupby('NAME')['GRANDTOTAL'].agg(['sum', 'count']).reset_index()
-        branch_table.columns = ['สาขา', 'ยอดขายรวม (บาท)', 'จำนวนบิล']
+        has_bill_no = 'BILL_NO' in df_filtered.columns and df_filtered['BILL_NO'].notna().any()
+        
+        if has_bill_no:
+            branch_table = df_filtered.groupby('NAME').agg({
+                'GRANDTOTAL': 'sum',
+                'BILL_NO': 'nunique'
+            }).reset_index()
+            branch_table.columns = ['สาขา', 'ยอดขายรวม (บาท)', 'จำนวนบิล']
+        else:
+            branch_table = df_filtered.groupby('NAME').agg({
+                'GRANDTOTAL': ['sum', 'count']
+            }).reset_index()
+            branch_table.columns = ['สาขา', 'ยอดขายรวม (บาท)', 'จำนวนบิล']
         
         branch_table['ยอดเฉลี่ยต่อบิล (บาท)'] = 0.0
         mask = branch_table['จำนวนบิล'] > 0
@@ -633,25 +658,21 @@ with tab_bestseller:
                 p_col = str_cols[0]
 
         if p_col and not df_p_filtered.empty:
-            # เพิ่มคอลัมน์หน่วย และจัดการเรื่อง จำนวนบิล (นับจาก DI_REF)
             u_col = 'UNIT_CUSTOM' if 'UNIT_CUSTOM' in df_p_filtered.columns else None
-            has_bill = 'BILL_NO_CUSTOM' in df_p_filtered.columns and df_p_filtered['BILL_NO_CUSTOM'].notna().any()
+            has_bill = 'BILL_NO' in df_p_filtered.columns and df_p_filtered['BILL_NO'].notna().any()
             
-            # --- เปลี่ยนวิธี Grouping ใหม่ทั้งหมดให้เสถียร 100% ---
             group_cols = [p_col, u_col] if u_col else [p_col]
             
-            # 1. กำหนดรูปแบบคำนวณผ่าน Dictionary
+            # คำนวณจำนวนบิลผ่าน DI_REF
             agg_dict = {
                 'GRANDTOTAL': 'sum',
                 'QTY': 'sum'
             }
             if has_bill:
-                agg_dict['BILL_NO_CUSTOM'] = 'nunique'
+                agg_dict['BILL_NO'] = 'nunique'
                 
-            # 2. ทำการรวบรวมข้อมูล
             top_products = df_p_filtered.groupby(group_cols).agg(agg_dict).reset_index()
             
-            # 3. เตรียมแมปสำหรับเปลี่ยนชื่อคอลัมน์กลับเป็นภาษาไทย
             rename_map = {
                 p_col: 'ชื่อสินค้า',
                 'GRANDTOTAL': 'ยอดขายรวม',
@@ -660,15 +681,13 @@ with tab_bestseller:
             if u_col:
                 rename_map[u_col] = 'หน่วย'
             if has_bill:
-                rename_map['BILL_NO_CUSTOM'] = 'จำนวนบิล'
+                rename_map['BILL_NO'] = 'จำนวนบิล'
                 
             top_products.rename(columns=rename_map, inplace=True)
             
-            # 4. หากไฟล์ต้นฉบับไม่มีคอลัมน์หน่วย ให้เพิ่มหน่วย 'ไม่ระบุ' เข้าไป
             if not u_col:
                 top_products.insert(1, 'หน่วย', 'ไม่ระบุ')
             
-            # กรองและจัดอันดับ
             top_products = top_products[top_products['ยอดขายรวม'] > 0]
             top_products = top_products.sort_values(by='จำนวนที่ขาย', ascending=False).head(20).reset_index(drop=True)
             top_products.insert(0, 'ลำดับ', range(1, len(top_products) + 1))
@@ -713,7 +732,6 @@ with tab_bestseller:
                 with col_b2:
                     st.markdown("###### ตารางรายละเอียดสินค้าขายดี 20 อันดับแรก")
                     
-                    # รูปแบบการแสดงผล (Format) คอลัมน์ตัวเลข
                     format_dict = {'ยอดขายรวม': '฿{:,.2f}', 'จำนวนที่ขาย': '{:,.0f}'}
                     if 'จำนวนบิล' in top_products.columns:
                         format_dict['จำนวนบิล'] = '{:,.0f}'

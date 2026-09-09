@@ -1,9 +1,15 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
 import os
 import re
 from datetime import datetime, timedelta
+
+# ป้องกัน Error กรณีที่ยังไม่ได้ติดตั้ง Plotly ใน Streamlit Cloud
+try:
+    import plotly.express as px
+    HAS_PLOTLY = True
+except ImportError:
+    HAS_PLOTLY = False
 
 # ==========================================
 # 1. PAGE CONFIG & CUSTOM CSS
@@ -52,710 +58,768 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# ==========================================
-# 2. COLOR MAP & HELPER FUNCTIONS
-# ==========================================
-branch_color_map = {
-    'ศรีเมือง': '#EF4444',
-    'ทุ่งปอ': '#3B82F6',
-    'เจ้าพรหม': '#A855F7',
-    'บ้านไร่': '#10B981',
-    'เทศบาล': '#EAB308',
-    'บ้านโป่ง': '#EC4899'
-}
+# ครอบโค้ดทั้งหมดด้วย try-except เพื่อป้องกันหน้าจอ "Oh no."
+try:
+    # ==========================================
+    # 2. COLOR MAP & HELPER FUNCTIONS
+    # ==========================================
+    branch_color_map = {
+        'ศรีเมือง': '#EF4444',
+        'ทุ่งปอ': '#3B82F6',
+        'เจ้าพรหม': '#A855F7',
+        'บ้านไร่': '#10B981',
+        'เทศบาล': '#EAB308',
+        'บ้านโป่ง': '#EC4899'
+    }
 
-def clean_numeric(series):
-    """ทำความสะอาดข้อมูลตัวเลข"""
-    if series is None:
-        return pd.Series(0.0)
-    
-    if pd.api.types.is_numeric_dtype(series):
-        return series.fillna(0.0).astype(float)
+    def clean_numeric(series):
+        """ทำความสะอาดข้อมูลตัวเลขอย่างปลอดภัย"""
+        if series is None:
+            return pd.Series(0.0)
         
-    s = series.astype(str).str.strip()
-    s = s.str.replace('\ufeff', '', regex=False)
-    s = s.str.replace('\xa0', '', regex=False)
-    s = s.str.replace(',', '', regex=False)
-    s = s.str.replace('฿', '', regex=False)
-    s = s.str.replace('THB', '', regex=False, case=False)
-    s = s.str.replace(' ', '', regex=False)
-    s = s.str.replace(r'^\((.*)\)$', r'-\1', regex=True)
-    
-    return pd.to_numeric(s, errors='coerce').fillna(0.0)
-
-def get_sales_amount_series(df):
-    """ค้นหาคอลัมน์ยอดขายอย่างฉลาด"""
-    candidates = [
-        'GRANDTOTAL_CUSTOM', 'PDATA_NET_AMT', 
-        'TRD_B_AMT', 'TRD_B_AMNT', 'TRD_AMOUNT', 'TRD_AMT', 'TRD_NET', 'TRD_VAL', 'TRD_G_AMT',
-        'DI_AMOUNT', 'DI_NET_VAL', 'DI_AMOUNT_NET', 'DI_TOTAL',
-        'NET_VAL', 'NET_AMT', 'NET_AMOUNT', 'NETVAL', 'NET_BAHT', 'NET',
-        'TOTAL_NET', 'TOTAL_AMT', 'TOTAL_AMOUNT', 'TOTAL_VAL', 'TOTAL_PRICE', 'TOTAL',
-        'GRANDTOTAL', 'GRAND_TOTAL', 'SUM_AMOUNT', 'SUM_AMT', 'SUM_VAL',
-        'AMOUNT', 'AMOUNT_TH', 'AMOUNT_BAHT', 'VAL', 'VALUE', 'PRICE',
-        'ยอดขาย', 'ยอดเงิน', 'จำนวนเงิน', 'จำนวนเงินรวม', 'มูลค่า', 'ราคารวม', 'ยอดรวม', 'ยอดรวมทั้งสิ้น'
-    ]
-    
-    df_cols_upper = {str(c).strip().replace('\ufeff', '').upper(): c for c in df.columns}
-    
-    for col in candidates:
-        col_u = col.upper()
-        if col_u in df_cols_upper:
-            real_col = df_cols_upper[col_u]
-            s = clean_numeric(df[real_col])
-            if s.abs().sum() > 0:
-                return s
-
-    return pd.Series(0.0, index=df.index)
-
-def get_branch_series(df):
-    """ค้นหาคอลัมน์ชื่อสาขา"""
-    branch_candidates = [
-        'BRANCH_CUSTOM', 'NAME', 
-        'BRANCH', 'BRANCH_NAME', 'NAME_TH', 'DI_BRANCH', 'BRANCHNAME',
-        'สาขา', 'ชื่อสาขา', 'สถานี', 'SHOP', 'SHOP_NAME', 'STORE'
-    ]
-    df_cols_upper = {str(c).strip().replace('\ufeff', '').upper(): c for c in df.columns}
-    
-    for col in branch_candidates:
-        col_u = col.upper()
-        if col_u in df_cols_upper:
-            real_col = df_cols_upper[col_u]
-            return df[real_col].astype(str).str.strip()
+        if pd.api.types.is_numeric_dtype(series):
+            return series.fillna(0.0).astype(float)
             
-    return pd.Series('ไม่ระบุสาขา', index=df.index)
-
-def get_bill_series(df):
-    """ค้นหาคอลัมน์เลขที่บิล (ฟังก์ชันแก้ไขป้องกับ App Crash)"""
-    bill_candidates = [
-        'DI_REF', 'DOC_NO', 'DI_NO', 'BILL_NO', 'INVOICE_NO', 'REF_NO', 'TRD_REF',
-        'เลขที่บิล', 'เลขที่เอกสาร', 'เลขที่', 'DOC_CODE'
-    ]
-    df_cols_upper = {str(c).strip().replace('\ufeff', '').upper(): c for c in df.columns}
-    
-    def clean_bill_no(val):
-        if pd.isna(val):
-            return pd.NA
-        val_str = str(val).strip()
-        # กรองคำที่เป็นค่าว่างหรือขยะออก ป้องกันนับซ้ำ
-        if val_str.lower() in {'nan', 'none', 'null', '', 'nat', '<na>'}:
-            return pd.NA
-        return val_str
-
-    for col in bill_candidates:
-        if col in df_cols_upper:
-            real_col = df_cols_upper[col]
-            s = df[real_col].apply(clean_bill_no)
-            if s.notna().any():
-                return s
-                
-    return pd.Series(pd.NA, index=df.index)
-
-def parse_date_column(df):
-    """ค้นหาและแปลงคอลัมน์วันที่"""
-    date_cols_keywords = [
-        'DOC_DATE_CUSTOM',
-        'DOC_DATE', 'DOCDATE', 'DI_DATE', 'TRD_DATE', 'TRAN_DATE', 'DATE', 'DATETIME', 
-        'วันที่', 'วัน/เดือน/ปี', 'DOC_DT', 'CREATED_AT', 'SALE_DATE', 'SDATE', 'D_DATE', 
-        'TR_DATE', 'DATE_TIME', 'CREATE_DATE'
-    ]
-    cols_map = {str(c).strip().replace('\ufeff', '').upper(): c for c in df.columns}
-    
-    found_col = None
-    for kw in date_cols_keywords:
-        if kw in cols_map:
-            found_col = cols_map[kw]
-            break
-            
-    if found_col:
-        col_s = df[found_col]
+        s = series.astype(str).str.strip()
+        s = s.str.replace('\ufeff', '', regex=False)
+        s = s.str.replace('\xa0', '', regex=False)
+        s = s.str.replace(',', '', regex=False)
+        s = s.str.replace('฿', '', regex=False)
+        s = s.str.replace('THB', '', regex=False, case=False)
+        s = s.str.replace(' ', '', regex=False)
+        s = s.str.replace(r'^\((.*)\)$', r'-\1', regex=True)
         
-        def convert_single_val(val):
-            if pd.isna(val) or val is None:
-                return pd.NaT
-            if isinstance(val, (pd.Timestamp, datetime)):
-                if val.year > 2400:
-                    try: return val.replace(year=val.year - 543)
-                    except: return pd.NaT
-                return val
+        return pd.to_numeric(s, errors='coerce').fillna(0.0)
+
+    def get_sales_amount_series(df):
+        """ค้นหาคอลัมน์ยอดขายอย่างปลอดภัย"""
+        if df.empty:
+            return pd.Series(dtype=float)
             
-            s = str(val).strip()
-            if s.lower() in ['nan', 'none', 'nat', '', 'null']:
-                return pd.NaT
-                
-            if len(s) == 8 and s.isdigit():
-                yr1 = int(s[:4])
-                if 1900 <= yr1 <= 3000:
-                    yr = yr1
-                    if yr > 2400: yr -= 543
-                    try: return datetime(yr, int(s[4:6]), int(s[6:8]))
-                    except: pass
-                yr2 = int(s[4:8])
-                if 1900 <= yr2 <= 3000:
-                    yr = yr2
-                    if yr > 2400: yr -= 543
-                    try: return datetime(yr, int(s[2:4]), int(s[0:2]))
-                    except: pass
-
-            m = re.search(r'\b(25\d{2}|26\d{2})\b', s)
-            if m:
-                be_yr = int(m.group(1))
-                ce_yr = be_yr - 543
-                s = s.replace(str(be_yr), str(ce_yr))
-                
-            try:
-                return pd.to_datetime(s, dayfirst=True)
-            except:
-                try:
-                    return pd.to_datetime(s)
-                except:
-                    return pd.NaT
-
-        parsed_series = col_s.apply(convert_single_val)
-        df['Parsed_Date'] = pd.to_datetime(parsed_series, errors='coerce')
-    else:
-        df['Parsed_Date'] = pd.NaT
-
-    if 'Parsed_Date' in df.columns and df['Parsed_Date'].notna().any():
-        df['Year_BE'] = df['Parsed_Date'].dt.year.apply(
-            lambda y: int(y + 543) if pd.notna(y) and not pd.isna(y) else None
-        )
-    else:
-        df['Year_BE'] = None
-
-    return df
-
-def load_all_sales_data():
-    """โหลดข้อมูลยอดขายหลัก"""
-    folder_path = "."
-    if not os.path.exists(folder_path):
-        return pd.DataFrame()
-    
-    files = os.listdir(folder_path)
-    all_data_files = [f for f in files if f.lower().endswith(('.csv', '.xlsx', '.xls'))]
-    
-    if not all_data_files:
-        return pd.DataFrame()
-        
-    sales_files = [f for f in all_data_files if 'product' not in f.lower() and 'bplus' not in f.lower()]
-    if not sales_files:
-        sales_files = all_data_files
-
-    dfs = []
-    for f in sales_files:
-        file_path = os.path.join(folder_path, f)
-        try:
-            if f.lower().endswith('.csv'):
-                try: df = pd.read_csv(file_path, encoding='utf-8-sig', low_memory=False)
-                except:
-                    try: df = pd.read_csv(file_path, encoding='tis-620', low_memory=False)
-                    except: df = pd.read_csv(file_path, encoding='cp838', low_memory=False)
-            else:
-                df = pd.read_excel(file_path)
-            
-            df.columns = [str(c).strip().replace('\ufeff', '') for c in df.columns]
-            col_map_upper = {c.upper(): c for c in df.columns}
-            
-            if 'PDATA_NET_AMT' in col_map_upper and 'PDATA_CODE' in col_map_upper and 'NAME' in col_map_upper:
-                df['GRANDTOTAL_CUSTOM'] = df[col_map_upper['PDATA_NET_AMT']]
-                df['DOC_DATE_CUSTOM'] = df[col_map_upper['PDATA_CODE']]
-                df['BRANCH_CUSTOM'] = df[col_map_upper['NAME']]
-            
-            df = parse_date_column(df)
-            df['GRANDTOTAL'] = get_sales_amount_series(df)
-            df['NAME'] = get_branch_series(df)
-            df['BILL_NO'] = get_bill_series(df)
-            df['FILE_SOURCE'] = f
-            
-            dfs.append(df)
-        except Exception:
-            continue
-            
-    if dfs:
-        return pd.concat(dfs, ignore_index=True)
-    return pd.DataFrame()
-
-def process_product_dataframe(df):
-    """ทำความสะอาดข้อมูลสินค้า BPLUS และตั้งค่า Column"""
-    df.columns = [str(c).strip().replace('\ufeff', '') for c in df.columns]
-    col_map_upper = {c.upper(): c for c in df.columns}
-    
-    if 'DI_DATE' in col_map_upper:
-        df['DOC_DATE_CUSTOM'] = df[col_map_upper['DI_DATE']]
-    if 'TRD_SH_NAME' in col_map_upper:
-        df['PRODUCT_NAME_CUSTOM'] = df[col_map_upper['TRD_SH_NAME']]
-    if 'TRD_Q_FREE' in col_map_upper:
-        df['QTY_CUSTOM'] = clean_numeric(df[col_map_upper['TRD_Q_FREE']])
-    if 'NAME' in col_map_upper:
-        df['BRANCH_CUSTOM'] = df[col_map_upper['NAME']]
-    if 'TRD_B_AMT' in col_map_upper:
-        df['GRANDTOTAL_CUSTOM'] = df[col_map_upper['TRD_B_AMT']]
-    if 'TRD_UTQNAME' in col_map_upper:
-        df['UNIT_CUSTOM'] = df[col_map_upper['TRD_UTQNAME']].astype(str).str.strip()
-    else:
-        df['UNIT_CUSTOM'] = 'ไม่ระบุ'
-        
-    df = parse_date_column(df)
-    df['NAME'] = get_branch_series(df)
-    df['GRANDTOTAL'] = get_sales_amount_series(df)
-    df['BILL_NO'] = get_bill_series(df)
-    
-    if 'QTY_CUSTOM' in df.columns:
-        df['QTY'] = df['QTY_CUSTOM']
-    else:
-        qty_candidates = ['TRD_QTY', 'DI_QTY', 'QTY', 'QUANTITY', 'AMOUNT_QTY', 'TOTAL_QTY', 'จำนวน']
-        df['QTY'] = 1.0
-        for col in qty_candidates:
-            col_u = col.upper()
-            if col_u in col_map_upper:
-                df['QTY'] = clean_numeric(df[col_map_upper[col_u]])
-                break
-
-    return df
-
-def load_bplus_data_from_folder():
-    """โหลดข้อมูลสำหรับ Tab สินค้าขายดี โดยค้นหาไฟล์ BPLUS"""
-    folder_path = "."
-    if not os.path.exists(folder_path):
-        return pd.DataFrame()
-    
-    files = os.listdir(folder_path)
-    bplus_files = [f for f in files if 'bplus' in f.lower() and f.lower().endswith(('.csv', '.xlsx', '.xls'))]
-    
-    if not bplus_files:
-        return pd.DataFrame()
-    
-    dfs = []
-    for f in bplus_files:
-        file_path = os.path.join(folder_path, f)
-        try:
-            if f.lower().endswith('.csv'):
-                try: df = pd.read_csv(file_path, encoding='utf-8-sig', low_memory=False)
-                except: df = pd.read_csv(file_path, encoding='tis-620', low_memory=False)
-            else:
-                df = pd.read_excel(file_path)
-            
-            df = process_product_dataframe(df)
-            dfs.append(df)
-        except Exception:
-            continue
-            
-    if dfs:
-        return pd.concat(dfs, ignore_index=True)
-    return pd.DataFrame()
-
-# ==========================================
-# 3. HEADER & TOP LOGO
-# ==========================================
-col_header, col_space = st.columns([2.5, 1.5])
-
-with col_header:
-    col_img, col_txt = st.columns([1, 4])
-    with col_img:
-        if os.path.exists("logo.png"):
-            st.image("logo.png", width=100)
-        else:
-            st.markdown("### 🍜")
-    with col_txt:
-        st.markdown(
-            """
-            <div style="display: flex; align-items: center; height: 100%; padding-top: 12px;">
-                <h2 style="color: #2b9e3e; font-weight: 800; font-size: 26px; margin: 0; line-height: 1.2;">
-                    PK NOODLE SHOP COMPANY LIMITED
-                </h2>
-            </div>
-            """, 
-            unsafe_allow_html=True
-        )
-
-st.markdown('<div class="trick-banner">🧮 <b>ทริค:</b> เมนูกรองข้อมูลอยู่ด้านซ้ายมือ (หากซ่อนอยู่ให้กดปุ่ม > เพื่อเปิด)</div>', unsafe_allow_html=True)
-
-# ==========================================
-# 4. LOAD & FILTER MAIN DATA
-# ==========================================
-df_sales = load_all_sales_data()
-
-# --- SIDEBAR FILTERS ---
-st.sidebar.markdown("### 🔍 เมนูกรองข้อมูล")
-
-available_branches = sorted(list(df_sales['NAME'].dropna().unique())) if not df_sales.empty and 'NAME' in df_sales.columns else []
-selected_branches = st.sidebar.multiselect("🏪 เลือกสาขา:", options=available_branches, default=available_branches)
-
-available_years = sorted([int(y) for y in df_sales['Year_BE'].dropna().unique()], reverse=True) if not df_sales.empty and 'Year_BE' in df_sales.columns and df_sales['Year_BE'].notna().any() else []
-selected_years = st.sidebar.multiselect("📅 เลือกปี พ.ศ.:", options=available_years, default=available_years)
-
-st.sidebar.markdown("---")
-st.sidebar.markdown("##### 📅 กรองตามช่วงวันที่")
-
-quick_time = st.sidebar.selectbox(
-    "เลือกช่วงเวลา:",
-    ["ทั้งหมดในระบบ", "วันนี้", "เมื่อวาน", "7 วันล่าสุด", "30 วันล่าสุด", "เดือนนี้", "กำหนดช่วงวันที่เอง"]
-)
-
-filter_start_date = None
-filter_end_date = None
-
-current_time_th = datetime.utcnow() + timedelta(hours=7)
-today_date = current_time_th.date()
-
-has_valid_dates = not df_sales.empty and 'Parsed_Date' in df_sales.columns and df_sales['Parsed_Date'].notna().any()
-
-if quick_time == "ทั้งหมดในระบบ":
-    filter_start_date, filter_end_date = None, None
-elif quick_time == "วันนี้":
-    filter_start_date, filter_end_date = today_date, today_date
-elif quick_time == "เมื่อวาน":
-    filter_start_date, filter_end_date = today_date - timedelta(days=1), today_date - timedelta(days=1)
-elif quick_time == "7 วันล่าสุด":
-    filter_start_date, filter_end_date = today_date - timedelta(days=7), today_date
-elif quick_time == "30 วันล่าสุด":
-    filter_start_date, filter_end_date = today_date - timedelta(days=30), today_date
-elif quick_time == "เดือนนี้":
-    filter_start_date, filter_end_date = today_date.replace(day=1), today_date
-elif quick_time == "กำหนดช่วงวันที่เอง":
-    if has_valid_dates:
-        valid_dates_series = df_sales['Parsed_Date'].dropna()
-        min_d = valid_dates_series.min().date()
-        max_d = valid_dates_series.max().date()
-    else:
-        min_d, max_d = today_date, today_date
-    
-    col_d1, col_d2 = st.sidebar.columns(2)
-    with col_d1:
-        filter_start_date = st.date_input("เริ่มต้น:", value=min_d)
-    with col_d2:
-        filter_end_date = st.date_input("สิ้นสุด:", value=max_d)
-
-# --- ประมวลผลการกรองข้อมูลหลัก ---
-df_filtered = df_sales.copy()
-
-if not df_filtered.empty:
-    if selected_branches and 'NAME' in df_filtered.columns:
-        df_filtered = df_filtered[df_filtered['NAME'].isin(selected_branches)]
-        
-    if selected_years and 'Year_BE' in df_filtered.columns:
-        df_filtered = df_filtered[df_filtered['Year_BE'].isin(selected_years)]
-        
-    if quick_time != "ทั้งหมดในระบบ" and filter_start_date and filter_end_date and 'Parsed_Date' in df_filtered.columns and df_filtered['Parsed_Date'].notna().any():
-        start_ts = pd.to_datetime(filter_start_date)
-        end_ts = pd.to_datetime(filter_end_date) + pd.Timedelta(days=1) - pd.Timedelta(nanoseconds=1)
-        
-        df_filtered = df_filtered[
-            df_filtered['Parsed_Date'].notna() &
-            (df_filtered['Parsed_Date'] >= start_ts) & 
-            (df_filtered['Parsed_Date'] <= end_ts)
+        candidates = [
+            'GRANDTOTAL_CUSTOM', 'PDATA_NET_AMT', 
+            'TRD_B_AMT', 'TRD_B_AMNT', 'TRD_AMOUNT', 'TRD_AMT', 'TRD_NET', 'TRD_VAL', 'TRD_G_AMT',
+            'DI_AMOUNT', 'DI_NET_VAL', 'DI_AMOUNT_NET', 'DI_TOTAL',
+            'NET_VAL', 'NET_AMT', 'NET_AMOUNT', 'NETVAL', 'NET_BAHT', 'NET',
+            'TOTAL_NET', 'TOTAL_AMT', 'TOTAL_AMOUNT', 'TOTAL_VAL', 'TOTAL_PRICE', 'TOTAL',
+            'GRANDTOTAL', 'GRAND_TOTAL', 'SUM_AMOUNT', 'SUM_AMT', 'SUM_VAL',
+            'AMOUNT', 'AMOUNT_TH', 'AMOUNT_BAHT', 'VAL', 'VALUE', 'PRICE',
+            'ยอดขาย', 'ยอดเงิน', 'จำนวนเงิน', 'จำนวนเงินรวม', 'มูลค่า', 'ราคารวม', 'ยอดรวม', 'ยอดรวมทั้งสิ้น'
         ]
-
-# ==========================================
-# 5. MAIN METRICS DISPLAY
-# ==========================================
-if not df_filtered.empty:
-    total_sales = df_filtered['GRANDTOTAL'].sum()
-    
-    has_bill_col = 'BILL_NO' in df_filtered.columns and df_filtered['BILL_NO'].notna().any()
-    
-    if has_bill_col:
-        # นับเฉพาะบิลที่ไม่ซ้ำกัน
-        total_bills = df_filtered['BILL_NO'].nunique()
-        bill_remark = "(นับจากเอกสารไม่ซ้ำ)"
-    else:
-        total_bills = len(df_filtered)
-        bill_remark = "(นับจากจำนวนบรรทัด)"
         
-    avg_per_bill = total_sales / total_bills if total_bills > 0 else 0.0
-else:
-    total_sales, total_bills, avg_per_bill = 0.0, 0, 0.0
-    bill_remark = ""
-
-col_m1, col_m2, col_m3 = st.columns(3)
-with col_m1:
-    st.markdown(f'<div class="metric-card"><div class="metric-title">ยอดขายรวมทั้งหมด (บาท)</div><div class="metric-value">฿{total_sales:,.2f}</div></div>', unsafe_allow_html=True)
-with col_m2:
-    st.markdown(f'<div class="metric-card"><div class="metric-title">จำนวนบิล <span style="font-size:11px; color:#94A3B8;">{bill_remark}</span></div><div class="metric-value">{total_bills:,.0f}</div></div>', unsafe_allow_html=True)
-with col_m3:
-    st.markdown(f'<div class="metric-card"><div class="metric-title">ยอดเฉลี่ยต่อบิล (บาท)</div><div class="metric-value">฿{avg_per_bill:,.2f}</div></div>', unsafe_allow_html=True)
-
-st.markdown("<br>", unsafe_allow_html=True)
-
-# ==========================================
-# 6. VISUALIZATION FUNCTIONS
-# ==========================================
-def render_branch_visualizations(df_source):
-    if df_source.empty or df_source['GRANDTOTAL'].sum() == 0:
-        st.info("ไม่พบข้อมูลยอดขายตามเงื่อนไขการกรองที่เลือก")
-        return
-
-    branch_summary = df_source.groupby('NAME')['GRANDTOTAL'].sum().reset_index()
-    branch_summary = branch_summary[branch_summary['GRANDTOTAL'] > 0]
-    branch_summary = branch_summary.sort_values(by='GRANDTOTAL', ascending=False)
-    
-    if branch_summary.empty:
-        st.info("ไม่พบข้อมูลยอดขายสำหรับสาขาที่เลือก")
-        return
-
-    c_bar, c_donut = st.columns([1.2, 1])
-    
-    with c_bar:
-        st.markdown("##### ยอดขาย (กราฟแท่ง)")
-        fig_bar = px.bar(
-            branch_summary, 
-            x='NAME', 
-            y='GRANDTOTAL', 
-            color='NAME', 
-            text='GRANDTOTAL', 
-            color_discrete_map=branch_color_map
-        )
-        fig_bar.update_traces(texttemplate='฿%{text:,.2f}', textposition='outside', cliponaxis=False)
-        fig_bar.update_layout(
-            xaxis_title="", 
-            yaxis_title="ยอดขาย (บาท)", 
-            showlegend=False, 
-            height=400, 
-            margin=dict(l=20, r=20, t=30, b=20), 
-            plot_bgcolor='rgba(0,0,0,0)', 
-            paper_bgcolor='rgba(0,0,0,0)'
-        )
-        st.plotly_chart(fig_bar, use_container_width=True)
-
-    with c_donut:
-        st.markdown("##### สัดส่วนยอดขาย (กราฟโดนัท)")
-        fig_donut = px.pie(
-            branch_summary, 
-            values='GRANDTOTAL', 
-            names='NAME', 
-            color='NAME',
-            hole=0.5, 
-            color_discrete_map=branch_color_map
-        )
-        fig_donut.update_traces(textinfo='percent+label', insidetextorientation='radial')
-        fig_donut.update_layout(
-            showlegend=True, 
-            height=400, 
-            margin=dict(l=20, r=20, t=30, b=20), 
-            paper_bgcolor='rgba(0,0,0,0)'
-        )
-        st.plotly_chart(fig_donut, use_container_width=True)
-
-# ==========================================
-# 7. TABS NAVIGATION
-# ==========================================
-tab_branch, tab_trend, tab_table, tab_bestseller = st.tabs([
-    "🏢 ยอดรวมสาขา", 
-    "📈 เทรนด์รายวัน", 
-    "📋 ตารางตัวเลข", 
-    "🍜 สินค้าขายดี"
-])
-
-# --- TAB 1: ยอดรวมสาขา ---
-with tab_branch:
-    if not df_filtered.empty:
-        render_branch_visualizations(df_filtered)
-    else:
-        st.info("ไม่พบข้อมูลยอดขาย (ตามเงื่อนไขการกรองปัจจุบัน)")
-
-# --- TAB 2: เทรนด์รายวัน ---
-with tab_trend:
-    st.markdown("##### 📈 แนวโน้มยอดขายรายวัน")
-    if not df_filtered.empty and 'Parsed_Date' in df_filtered.columns and df_filtered['Parsed_Date'].notna().any():
-        valid_dates = df_filtered[df_filtered['Parsed_Date'].notna()].copy()
-        valid_dates['Date_Str'] = valid_dates['Parsed_Date'].dt.strftime('%Y-%m-%d')
-        daily_sales = valid_dates.groupby('Date_Str')['GRANDTOTAL'].sum().reset_index()
-        daily_sales.columns = ['วันที่', 'ยอดขาย']
-        daily_sales = daily_sales.sort_values('วันที่')
+        df_cols_upper = {str(c).strip().replace('\ufeff', '').upper(): c for c in df.columns}
         
-        if not daily_sales.empty:
-            fig_line = px.line(daily_sales, x='วันที่', y='ยอดขาย', markers=True, line_shape='linear')
-            fig_line.update_traces(line_color='#2b9e3e', line_width=3)
-            fig_line.update_layout(height=400, xaxis_title="วันที่", yaxis_title="ยอดขาย (บาท)", plot_bgcolor='rgba(0,0,0,0)')
-            st.plotly_chart(fig_line, use_container_width=True)
-        else:
-            st.info("ไม่พบข้อมูลยอดขายรายวันตามเงื่อนไขการกรองที่เลือก")
-    else:
-        st.info("ไม่พบข้อมูลวันที่ในการประมวลผลเทรนด์รายวัน")
+        for col in candidates:
+            col_u = col.upper()
+            if col_u in df_cols_upper:
+                real_col = df_cols_upper[col_u]
+                s = clean_numeric(df[real_col])
+                if s.abs().sum() > 0:
+                    return s
 
-# --- TAB 3: ตารางตัวเลข ---
-with tab_table:
-    st.markdown("##### 📋 ตารางสรุปยอดขายแยกตามสาขา")
-    if not df_filtered.empty and 'GRANDTOTAL' in df_filtered.columns:
-        has_bill_no = 'BILL_NO' in df_filtered.columns and df_filtered['BILL_NO'].notna().any()
-        
-        # ปรับการรวมตารางให้ปลอดภัยขึ้น
-        if has_bill_no:
-            branch_table = df_filtered.groupby('NAME').agg(
-                ยอดขายรวม_sum=('GRANDTOTAL', 'sum'),
-                บิล_nunique=('BILL_NO', 'nunique')
-            ).reset_index()
-        else:
-            branch_table = df_filtered.groupby('NAME').agg(
-                ยอดขายรวม_sum=('GRANDTOTAL', 'sum'),
-                บิล_nunique=('GRANDTOTAL', 'count')
-            ).reset_index()
+        return pd.Series(0.0, index=df.index)
+
+    def get_branch_series(df):
+        """ค้นหาคอลัมน์ชื่อสาขาอย่างปลอดภัย"""
+        if df.empty:
+            return pd.Series(dtype=str)
             
-        branch_table.columns = ['สาขา', 'ยอดขายรวม (บาท)', 'จำนวนบิล']
+        branch_candidates = [
+            'BRANCH_CUSTOM', 'NAME', 
+            'BRANCH', 'BRANCH_NAME', 'NAME_TH', 'DI_BRANCH', 'BRANCHNAME',
+            'สาขา', 'ชื่อสาขา', 'สถานี', 'SHOP', 'SHOP_NAME', 'STORE'
+        ]
+        df_cols_upper = {str(c).strip().replace('\ufeff', '').upper(): c for c in df.columns}
         
-        branch_table['ยอดเฉลี่ยต่อบิล (บาท)'] = 0.0
-        mask = branch_table['จำนวนบิล'] > 0
-        branch_table.loc[mask, 'ยอดเฉลี่ยต่อบิล (บาท)'] = (
-            branch_table.loc[mask, 'ยอดขายรวม (บาท)'] / branch_table.loc[mask, 'จำนวนบิล']
-        )
-        
-        branch_table = branch_table.sort_values(by='ยอดขายรวม (บาท)', ascending=False)
-        
-        st.dataframe(
-            branch_table.style.format({
-                'ยอดขายรวม (บาท)': '฿{:,.2f}',
-                'จำนวนบิล': '{:,.0f}',
-                'ยอดเฉลี่ยต่อบิล (บาท)': '฿{:,.2f}'
-            }),
-            use_container_width=True,
-            hide_index=True
-        )
-    else:
-        st.info("ไม่พบข้อมูลสำหรับการแสดงตารางตามเงื่อนไขที่เลือก")
+        for col in branch_candidates:
+            col_u = col.upper()
+            if col_u in df_cols_upper:
+                real_col = df_cols_upper[col_u]
+                return df[real_col].astype(str).str.strip()
+                
+        return pd.Series('ไม่ระบุสาขา', index=df.index)
 
-# --- TAB 4: สินค้าขายดี ---
-with tab_bestseller:
-    st.markdown("##### 🍜 รายงานสินค้าขายดี (ดึงข้อมูลจากไฟล์ BPLUS)")
-    
-    df_product = load_bplus_data_from_folder()
-    
-    if df_product.empty:
-        st.info("💡 ไม่พบไฟล์ BPLUS ในระบบ สามารถเลือกอัปโหลดไฟล์ BPLUS ตรงนี้เพื่อประมวลผลทันทีได้ครับ")
-        uploaded_pfile = st.file_uploader(
-            "📂 เลือกอัปโหลดไฟล์ BPLUS (.csv หรือ .xlsx):", 
-            type=['csv', 'xlsx', 'xls'],
-            key="bplus_file_uploader"
-        )
-        if uploaded_pfile is not None:
+    def get_bill_series(df):
+        """ค้นหาคอลัมน์เลขที่บิลอย่างปลอดภัย"""
+        if df.empty:
+            return pd.Series(dtype=object)
+            
+        bill_candidates = [
+            'DI_REF', 'DOC_NO', 'DI_NO', 'BILL_NO', 'INVOICE_NO', 'REF_NO', 'TRD_REF',
+            'เลขที่บิล', 'เลขที่เอกสาร', 'เลขที่', 'DOC_CODE'
+        ]
+        df_cols_upper = {str(c).strip().replace('\ufeff', '').upper(): c for c in df.columns}
+        
+        def clean_bill_no(val):
+            if pd.isna(val) or val is None:
+                return None
+            val_str = str(val).strip()
+            if val_str.lower() in {'nan', 'none', 'null', '', 'nat', '<na>'}:
+                return None
+            return val_str
+
+        for col in bill_candidates:
+            col_u = col.upper()
+            if col_u in df_cols_upper:
+                real_col = df_cols_upper[col_u]
+                s = df[real_col].apply(clean_bill_no)
+                if s.notna().any():
+                    return s
+                    
+        return pd.Series(None, index=df.index, dtype=object)
+
+    def parse_date_column(df):
+        """ค้นหาและแปลงคอลัมน์วันที่อย่างปลอดภัย"""
+        if df.empty:
+            df['Parsed_Date'] = pd.NaT
+            df['Year_BE'] = None
+            return df
+
+        date_cols_keywords = [
+            'DOC_DATE_CUSTOM',
+            'DOC_DATE', 'DOCDATE', 'DI_DATE', 'TRD_DATE', 'TRAN_DATE', 'DATE', 'DATETIME', 
+            'วันที่', 'วัน/เดือน/ปี', 'DOC_DT', 'CREATED_AT', 'SALE_DATE', 'SDATE', 'D_DATE', 
+            'TR_DATE', 'DATE_TIME', 'CREATE_DATE'
+        ]
+        cols_map = {str(c).strip().replace('\ufeff', '').upper(): c for c in df.columns}
+        
+        found_col = None
+        for kw in date_cols_keywords:
+            if kw in cols_map:
+                found_col = cols_map[kw]
+                break
+                
+        if found_col:
+            col_s = df[found_col]
+            
+            def convert_single_val(val):
+                if pd.isna(val) or val is None:
+                    return pd.NaT
+                if isinstance(val, (pd.Timestamp, datetime)):
+                    if val.year > 2400:
+                        try: return val.replace(year=val.year - 543)
+                        except: return pd.NaT
+                    return val
+                
+                s = str(val).strip()
+                if s.lower() in ['nan', 'none', 'nat', '', 'null']:
+                    return pd.NaT
+                    
+                if len(s) == 8 and s.isdigit():
+                    yr1 = int(s[:4])
+                    if 1900 <= yr1 <= 3000:
+                        yr = yr1
+                        if yr > 2400: yr -= 543
+                        try: return datetime(yr, int(s[4:6]), int(s[6:8]))
+                        except: pass
+                    yr2 = int(s[4:8])
+                    if 1900 <= yr2 <= 3000:
+                        yr = yr2
+                        if yr > 2400: yr -= 543
+                        try: return datetime(yr, int(s[2:4]), int(s[0:2]))
+                        except: pass
+
+                m = re.search(r'\b(25\d{2}|26\d{2})\b', s)
+                if m:
+                    be_yr = int(m.group(1))
+                    ce_yr = be_yr - 543
+                    s = s.replace(str(be_yr), str(ce_yr))
+                    
+                try:
+                    return pd.to_datetime(s, dayfirst=True)
+                except:
+                    try:
+                        return pd.to_datetime(s)
+                    except:
+                        return pd.NaT
+
+            parsed_series = col_s.apply(convert_single_val)
+            df['Parsed_Date'] = pd.to_datetime(parsed_series, errors='coerce')
+        else:
+            df['Parsed_Date'] = pd.NaT
+
+        if 'Parsed_Date' in df.columns and df['Parsed_Date'].notna().any():
+            df['Year_BE'] = df['Parsed_Date'].apply(
+                lambda x: int(x.year + 543) if pd.notna(x) and hasattr(x, 'year') else None
+            )
+        else:
+            df['Year_BE'] = None
+
+        return df
+
+    def empty_sales_df():
+        return pd.DataFrame(columns=['NAME', 'GRANDTOTAL', 'BILL_NO', 'Parsed_Date', 'Year_BE', 'FILE_SOURCE'])
+
+    def load_all_sales_data():
+        """โหลดข้อมูลยอดขายหลัก"""
+        folder_path = "."
+        if not os.path.exists(folder_path):
+            return empty_sales_df()
+        
+        files = os.listdir(folder_path)
+        all_data_files = [f for f in files if f.lower().endswith(('.csv', '.xlsx', '.xls'))]
+        
+        if not all_data_files:
+            return empty_sales_df()
+            
+        sales_files = [f for f in all_data_files if 'product' not in f.lower() and 'bplus' not in f.lower()]
+        if not sales_files:
+            sales_files = all_data_files
+
+        dfs = []
+        for f in sales_files:
+            file_path = os.path.join(folder_path, f)
             try:
-                if uploaded_pfile.name.lower().endswith('.csv'):
-                    try: df_raw = pd.read_csv(uploaded_pfile, encoding='utf-8-sig', low_memory=False)
-                    except: df_raw = pd.read_csv(uploaded_pfile, encoding='tis-620', low_memory=False)
+                if f.lower().endswith('.csv'):
+                    for enc in ['utf-8-sig', 'tis-620', 'cp838', 'latin1', 'utf-8']:
+                        try:
+                            df = pd.read_csv(file_path, encoding=enc, low_memory=False)
+                            break
+                        except Exception:
+                            df = pd.DataFrame()
                 else:
-                    df_raw = pd.read_excel(uploaded_pfile)
-                df_product = process_product_dataframe(df_raw)
-            except Exception as e:
-                st.error(f"เกิดข้อผิดพลาดในการอ่านไฟล์: {e}")
+                    df = pd.read_excel(file_path)
+                
+                if df.empty:
+                    continue
 
-    if not df_product.empty:
-        df_p_filtered = df_product.copy()
-        
-        # กรองสาขา
-        if selected_branches and 'NAME' in df_p_filtered.columns:
-            df_p_filtered = df_p_filtered[df_p_filtered['NAME'].isin(selected_branches)]
-        
-        # กรองปี พ.ศ.
-        if selected_years and 'Year_BE' in df_p_filtered.columns:
-            df_p_filtered = df_p_filtered[df_p_filtered['Year_BE'].isin(selected_years)]
+                df.columns = [str(c).strip().replace('\ufeff', '') for c in df.columns]
+                col_map_upper = {c.upper(): c for c in df.columns}
+                
+                if 'PDATA_NET_AMT' in col_map_upper and 'PDATA_CODE' in col_map_upper and 'NAME' in col_map_upper:
+                    df['GRANDTOTAL_CUSTOM'] = df[col_map_upper['PDATA_NET_AMT']]
+                    df['DOC_DATE_CUSTOM'] = df[col_map_upper['PDATA_CODE']]
+                    df['BRANCH_CUSTOM'] = df[col_map_upper['NAME']]
+                
+                df = parse_date_column(df)
+                df['GRANDTOTAL'] = get_sales_amount_series(df)
+                df['NAME'] = get_branch_series(df)
+                df['BILL_NO'] = get_bill_series(df)
+                df['FILE_SOURCE'] = f
+                
+                dfs.append(df)
+            except Exception:
+                continue
+                
+        if dfs:
+            return pd.concat(dfs, ignore_index=True)
+        return empty_sales_df()
 
-        # กรองวันที่
-        if quick_time != "ทั้งหมดในระบบ" and filter_start_date and filter_end_date and 'Parsed_Date' in df_p_filtered.columns and df_p_filtered['Parsed_Date'].notna().any():
+    def process_product_dataframe(df):
+        """ทำความสะอาดข้อมูลสินค้า BPLUS"""
+        if df.empty:
+            return df
+
+        df.columns = [str(c).strip().replace('\ufeff', '') for c in df.columns]
+        col_map_upper = {c.upper(): c for c in df.columns}
+        
+        if 'DI_DATE' in col_map_upper:
+            df['DOC_DATE_CUSTOM'] = df[col_map_upper['DI_DATE']]
+        if 'TRD_SH_NAME' in col_map_upper:
+            df['PRODUCT_NAME_CUSTOM'] = df[col_map_upper['TRD_SH_NAME']]
+        if 'TRD_Q_FREE' in col_map_upper:
+            df['QTY_CUSTOM'] = clean_numeric(df[col_map_upper['TRD_Q_FREE']])
+        if 'NAME' in col_map_upper:
+            df['BRANCH_CUSTOM'] = df[col_map_upper['NAME']]
+        if 'TRD_B_AMT' in col_map_upper:
+            df['GRANDTOTAL_CUSTOM'] = df[col_map_upper['TRD_B_AMT']]
+        if 'TRD_UTQNAME' in col_map_upper:
+            df['UNIT_CUSTOM'] = df[col_map_upper['TRD_UTQNAME']].astype(str).str.strip()
+        else:
+            df['UNIT_CUSTOM'] = 'ไม่ระบุ'
+            
+        df = parse_date_column(df)
+        df['NAME'] = get_branch_series(df)
+        df['GRANDTOTAL'] = get_sales_amount_series(df)
+        df['BILL_NO'] = get_bill_series(df)
+        
+        if 'QTY_CUSTOM' in df.columns:
+            df['QTY'] = df['QTY_CUSTOM']
+        else:
+            qty_candidates = ['TRD_QTY', 'DI_QTY', 'QTY', 'QUANTITY', 'AMOUNT_QTY', 'TOTAL_QTY', 'จำนวน']
+            df['QTY'] = 1.0
+            for col in qty_candidates:
+                col_u = col.upper()
+                if col_u in col_map_upper:
+                    df['QTY'] = clean_numeric(df[col_map_upper[col_u]])
+                    break
+
+        return df
+
+    def load_bplus_data_from_folder():
+        """โหลดข้อมูลสินค้า BPLUS"""
+        folder_path = "."
+        if not os.path.exists(folder_path):
+            return pd.DataFrame()
+        
+        files = os.listdir(folder_path)
+        bplus_files = [f for f in files if 'bplus' in f.lower() and f.lower().endswith(('.csv', '.xlsx', '.xls'))]
+        
+        if not bplus_files:
+            return pd.DataFrame()
+        
+        dfs = []
+        for f in bplus_files:
+            file_path = os.path.join(folder_path, f)
+            try:
+                if f.lower().endswith('.csv'):
+                    for enc in ['utf-8-sig', 'tis-620', 'cp838', 'latin1', 'utf-8']:
+                        try:
+                            df = pd.read_csv(file_path, encoding=enc, low_memory=False)
+                            break
+                        except Exception:
+                            df = pd.DataFrame()
+                else:
+                    df = pd.read_excel(file_path)
+                
+                if not df.empty:
+                    df = process_product_dataframe(df)
+                    dfs.append(df)
+            except Exception:
+                continue
+                
+        if dfs:
+            return pd.concat(dfs, ignore_index=True)
+        return pd.DataFrame()
+
+    # ==========================================
+    # 3. HEADER & LOGO
+    # ==========================================
+    col_header, col_space = st.columns([2.5, 1.5])
+
+    with col_header:
+        col_img, col_txt = st.columns([1, 4])
+        with col_img:
+            if os.path.exists("logo.png"):
+                st.image("logo.png", width=100)
+            else:
+                st.markdown("### 🍜")
+        with col_txt:
+            st.markdown(
+                """
+                <div style="display: flex; align-items: center; height: 100%; padding-top: 12px;">
+                    <h2 style="color: #2b9e3e; font-weight: 800; font-size: 26px; margin: 0; line-height: 1.2;">
+                        PK NOODLE SHOP COMPANY LIMITED
+                    </h2>
+                </div>
+                """, 
+                unsafe_allow_html=True
+            )
+
+    st.markdown('<div class="trick-banner">🧮 <b>ทริค:</b> เมนูกรองข้อมูลอยู่ด้านซ้ายมือ (หากซ่อนอยู่ให้กดปุ่ม > เพื่อเปิด)</div>', unsafe_allow_html=True)
+
+    if not HAS_PLOTLY:
+        st.warning("⚠️ ระบบทำงานในโหมดกราฟพื้นฐาน (โปรดเพิ่ม plotly ในไฟล์ requirements.txt บน GitHub เพื่อเปิดใช้กราฟสถิติแบบละเอียด)")
+
+    # ==========================================
+    # 4. LOAD & FILTER MAIN DATA
+    # ==========================================
+    df_sales = load_all_sales_data()
+
+    # --- SIDEBAR FILTERS ---
+    st.sidebar.markdown("### 🔍 เมนูกรองข้อมูล")
+
+    available_branches = sorted(list(df_sales['NAME'].dropna().unique())) if not df_sales.empty and 'NAME' in df_sales.columns else []
+    selected_branches = st.sidebar.multiselect("🏪 เลือกสาขา:", options=available_branches, default=available_branches)
+
+    available_years = sorted([int(y) for y in df_sales['Year_BE'].dropna().unique() if pd.notna(y)], reverse=True) if not df_sales.empty and 'Year_BE' in df_sales.columns and df_sales['Year_BE'].notna().any() else []
+    selected_years = st.sidebar.multiselect("📅 เลือกปี พ.ศ.:", options=available_years, default=available_years)
+
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("##### 📅 กรองตามช่วงวันที่")
+
+    quick_time = st.sidebar.selectbox(
+        "เลือกช่วงเวลา:",
+        ["ทั้งหมดในระบบ", "วันนี้", "เมื่อวาน", "7 วันล่าสุด", "30 วันล่าสุด", "เดือนนี้", "กำหนดช่วงวันที่เอง"]
+    )
+
+    filter_start_date = None
+    filter_end_date = None
+
+    current_time_th = datetime.utcnow() + timedelta(hours=7)
+    today_date = current_time_th.date()
+
+    has_valid_dates = not df_sales.empty and 'Parsed_Date' in df_sales.columns and df_sales['Parsed_Date'].notna().any()
+
+    if quick_time == "ทั้งหมดในระบบ":
+        filter_start_date, filter_end_date = None, None
+    elif quick_time == "วันนี้":
+        filter_start_date, filter_end_date = today_date, today_date
+    elif quick_time == "เมื่อวาน":
+        filter_start_date, filter_end_date = today_date - timedelta(days=1), today_date - timedelta(days=1)
+    elif quick_time == "7 วันล่าสุด":
+        filter_start_date, filter_end_date = today_date - timedelta(days=7), today_date
+    elif quick_time == "30 วันล่าสุด":
+        filter_start_date, filter_end_date = today_date - timedelta(days=30), today_date
+    elif quick_time == "เดือนนี้":
+        filter_start_date, filter_end_date = today_date.replace(day=1), today_date
+    elif quick_time == "กำหนดช่วงวันที่เอง":
+        if has_valid_dates:
+            valid_dates_series = df_sales['Parsed_Date'].dropna()
+            if not valid_dates_series.empty:
+                min_d = valid_dates_series.min().date()
+                max_d = valid_dates_series.max().date()
+            else:
+                min_d, max_d = today_date, today_date
+        else:
+            min_d, max_d = today_date, today_date
+        
+        col_d1, col_d2 = st.sidebar.columns(2)
+        with col_d1:
+            filter_start_date = st.date_input("เริ่มต้น:", value=min_d)
+        with col_d2:
+            filter_end_date = st.date_input("สิ้นสุด:", value=max_d)
+
+    # --- ประมวลผลการกรองข้อมูลหลัก ---
+    df_filtered = df_sales.copy()
+
+    if not df_filtered.empty:
+        if selected_branches and 'NAME' in df_filtered.columns:
+            df_filtered = df_filtered[df_filtered['NAME'].isin(selected_branches)]
+            
+        if selected_years and 'Year_BE' in df_filtered.columns:
+            df_filtered = df_filtered[df_filtered['Year_BE'].isin(selected_years)]
+            
+        if quick_time != "ทั้งหมดในระบบ" and filter_start_date and filter_end_date and 'Parsed_Date' in df_filtered.columns and df_filtered['Parsed_Date'].notna().any():
             start_ts = pd.to_datetime(filter_start_date)
             end_ts = pd.to_datetime(filter_end_date) + pd.Timedelta(days=1) - pd.Timedelta(nanoseconds=1)
             
-            df_p_filtered = df_p_filtered[
-                df_p_filtered['Parsed_Date'].notna() &
-                (df_p_filtered['Parsed_Date'] >= start_ts) & 
-                (df_p_filtered['Parsed_Date'] <= end_ts)
+            df_filtered = df_filtered[
+                df_filtered['Parsed_Date'].notna() &
+                (df_filtered['Parsed_Date'] >= start_ts) & 
+                (df_filtered['Parsed_Date'] <= end_ts)
             ]
 
-        # ดึงชื่อสินค้า
-        p_col = 'PRODUCT_NAME_CUSTOM' if 'PRODUCT_NAME_CUSTOM' in df_p_filtered.columns else None
+    # ==========================================
+    # 5. MAIN METRICS DISPLAY
+    # ==========================================
+    if not df_filtered.empty and 'GRANDTOTAL' in df_filtered.columns:
+        total_sales = df_filtered['GRANDTOTAL'].sum()
         
-        if not p_col:
-            possible_p_cols = ['TRD_SH_NAME', 'DI_PRD_NAME', 'GOODS_NAME', 'DI_NAME', 'PRD_NAME', 'GOODSNAME', 'GOODS_DESC', 'ARTICLE_NAME', 'SHOW_NAME', 'PDATA_NAME', 'PRODUCT_NAME', 'P_NAME', 'NAME_1', 'ชื่อสินค้า', 'PRODUCT', 'ITEM_NAME', 'DESCR', 'ITEMNAME', 'DESCRIPTION', 'TITLE', 'สินค้า', 'รายการ', 'ชื่อรายการ', 'NAME_TH']
-            p_col = next((c for c in possible_p_cols if c in df_p_filtered.columns), None)
-
-        if not p_col:
-            str_cols = [c for c in df_p_filtered.columns if c not in ['GRANDTOTAL', 'QTY', 'Year_BE', 'Parsed_Date', 'HAS_BRANCH_COL']]
-            if str_cols:
-                p_col = str_cols[0]
-
-        if p_col and not df_p_filtered.empty:
-            u_col = 'UNIT_CUSTOM' if 'UNIT_CUSTOM' in df_p_filtered.columns else None
-            has_bill = 'BILL_NO' in df_p_filtered.columns and df_p_filtered['BILL_NO'].notna().any()
-            
-            group_cols = [p_col, u_col] if u_col else [p_col]
-            
-            agg_dict = {
-                'GRANDTOTAL': 'sum',
-                'QTY': 'sum'
-            }
-            if has_bill:
-                agg_dict['BILL_NO'] = 'nunique'
-                
-            top_products = df_p_filtered.groupby(group_cols).agg(agg_dict).reset_index()
-            
-            rename_map = {
-                p_col: 'ชื่อสินค้า',
-                'GRANDTOTAL': 'ยอดขายรวม',
-                'QTY': 'จำนวนที่ขาย'
-            }
-            if u_col:
-                rename_map[u_col] = 'หน่วย'
-            if has_bill:
-                rename_map['BILL_NO'] = 'บิลที่มีสินค้านี้'
-                
-            top_products.rename(columns=rename_map, inplace=True)
-            
-            if not u_col:
-                top_products.insert(1, 'หน่วย', 'ไม่ระบุ')
-            
-            top_products = top_products[top_products['ยอดขายรวม'] > 0]
-            top_products = top_products.sort_values(by='จำนวนที่ขาย', ascending=False).head(20).reset_index(drop=True)
-            top_products.insert(0, 'ลำดับ', range(1, len(top_products) + 1))
-            
-            if not top_products.empty:
-                col_b1, col_b2 = st.columns([1.3, 1])
-                with col_b1:
-                    st.markdown("###### Top 10 สินค้าขายดีที่สุด (ยอดขาย)")
-                    
-                    df_top10_chart = top_products.sort_values(by='ยอดขายรวม', ascending=True).tail(10)
-                    max_sales = df_top10_chart['ยอดขายรวม'].max()
-                    
-                    fig_pbar = px.bar(
-                        df_top10_chart,
-                        y='ชื่อสินค้า',
-                        x='ยอดขายรวม',
-                        orientation='h',
-                        text='ยอดขายรวม',
-                        color='ชื่อสินค้า',
-                        color_discrete_sequence=px.colors.qualitative.Bold
-                    )
-                    
-                    fig_pbar.update_traces(
-                        texttemplate='฿%{text:,.2f}', 
-                        textposition='outside', 
-                        cliponaxis=False
-                    )
-                    
-                    fig_pbar.update_layout(
-                        xaxis_title="ยอดขาย (บาท)", 
-                        yaxis_title="", 
-                        height=430, 
-                        margin=dict(l=10, r=90, t=20, b=20), 
-                        showlegend=False,
-                        plot_bgcolor='rgba(0,0,0,0)', 
-                        paper_bgcolor='rgba(0,0,0,0)'
-                    )
-                    
-                    fig_pbar.update_xaxes(range=[0, max_sales * 1.25])
-                    st.plotly_chart(fig_pbar, use_container_width=True)
-
-                with col_b2:
-                    st.markdown("###### ตารางรายละเอียดสินค้าขายดี 20 อันดับแรก")
-                    
-                    format_dict = {'ยอดขายรวม': '฿{:,.2f}', 'จำนวนที่ขาย': '{:,.0f}'}
-                    if 'บิลที่มีสินค้านี้' in top_products.columns:
-                        format_dict['บิลที่มีสินค้านี้'] = '{:,.0f}'
-
-                    st.dataframe(
-                        top_products.style.format(format_dict),
-                        use_container_width=True, 
-                        height=430,
-                        hide_index=True
-                    )
-            else:
-                st.info("ไม่พบรายการสินค้าที่มียอดขายมากกว่า 0 บาท ตามเงื่อนไขการกรองที่เลือก")
+        has_bill_col = 'BILL_NO' in df_filtered.columns and df_filtered['BILL_NO'].notna().any()
+        
+        if has_bill_col:
+            total_bills = df_filtered['BILL_NO'].nunique()
+            bill_remark = "(นับจากเอกสารไม่ซ้ำ)"
         else:
-            st.info("ไม่พบข้อมูลสินค้าตามเงื่อนไขการกรองที่เลือก")
+            total_bills = len(df_filtered)
+            bill_remark = "(นับจากจำนวนบรรทัด)"
+            
+        avg_per_bill = total_sales / total_bills if total_bills > 0 else 0.0
+    else:
+        total_sales, total_bills, avg_per_bill = 0.0, 0, 0.0
+        bill_remark = ""
+
+    col_m1, col_m2, col_m3 = st.columns(3)
+    with col_m1:
+        st.markdown(f'<div class="metric-card"><div class="metric-title">ยอดขายรวมทั้งหมด (บาท)</div><div class="metric-value">฿{total_sales:,.2f}</div></div>', unsafe_allow_html=True)
+    with col_m2:
+        st.markdown(f'<div class="metric-card"><div class="metric-title">จำนวนบิล <span style="font-size:11px; color:#94A3B8;">{bill_remark}</span></div><div class="metric-value">{total_bills:,.0f}</div></div>', unsafe_allow_html=True)
+    with col_m3:
+        st.markdown(f'<div class="metric-card"><div class="metric-title">ยอดเฉลี่ยต่อบิล (บาท)</div><div class="metric-value">฿{avg_per_bill:,.2f}</div></div>', unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ==========================================
+    # 6. VISUALIZATION FUNCTIONS
+    # ==========================================
+    def render_branch_visualizations(df_source):
+        if df_source.empty or 'GRANDTOTAL' not in df_source.columns or df_source['GRANDTOTAL'].sum() == 0:
+            st.info("ไม่พบข้อมูลยอดขายตามเงื่อนไขการกรองที่เลือก")
+            return
+
+        branch_summary = df_source.groupby('NAME')['GRANDTOTAL'].sum().reset_index()
+        branch_summary = branch_summary[branch_summary['GRANDTOTAL'] > 0]
+        branch_summary = branch_summary.sort_values(by='GRANDTOTAL', ascending=False)
+        
+        if branch_summary.empty:
+            st.info("ไม่พบข้อมูลยอดขายสำหรับสาขาที่เลือก")
+            return
+
+        c_bar, c_donut = st.columns([1.2, 1])
+        
+        with c_bar:
+            st.markdown("##### ยอดขาย (กราฟแท่ง)")
+            if HAS_PLOTLY:
+                fig_bar = px.bar(
+                    branch_summary, 
+                    x='NAME', 
+                    y='GRANDTOTAL', 
+                    color='NAME', 
+                    text='GRANDTOTAL', 
+                    color_discrete_map=branch_color_map
+                )
+                fig_bar.update_traces(texttemplate='฿%{text:,.2f}', textposition='outside', cliponaxis=False)
+                fig_bar.update_layout(
+                    xaxis_title="", 
+                    yaxis_title="ยอดขาย (บาท)", 
+                    showlegend=False, 
+                    height=400, 
+                    margin=dict(l=20, r=20, t=30, b=20), 
+                    plot_bgcolor='rgba(0,0,0,0)', 
+                    paper_bgcolor='rgba(0,0,0,0)'
+                )
+                st.plotly_chart(fig_bar, use_container_width=True)
+            else:
+                st.bar_chart(branch_summary.set_index('NAME')['GRANDTOTAL'])
+
+        with c_donut:
+            st.markdown("##### สัดส่วนยอดขาย (กราฟโดนัท)")
+            if HAS_PLOTLY:
+                fig_donut = px.pie(
+                    branch_summary, 
+                    values='GRANDTOTAL', 
+                    names='NAME', 
+                    color='NAME',
+                    hole=0.5, 
+                    color_discrete_map=branch_color_map
+                )
+                fig_donut.update_traces(textinfo='percent+label', insidetextorientation='radial')
+                fig_donut.update_layout(
+                    showlegend=True, 
+                    height=400, 
+                    margin=dict(l=20, r=20, t=30, b=20), 
+                    paper_bgcolor='rgba(0,0,0,0)'
+                )
+                st.plotly_chart(fig_donut, use_container_width=True)
+            else:
+                st.dataframe(branch_summary, use_container_width=True)
+
+    # ==========================================
+    # 7. TABS NAVIGATION
+    # ==========================================
+    tab_branch, tab_trend, tab_table, tab_bestseller = st.tabs([
+        "🏢 ยอดรวมสาขา", 
+        "📈 เทรนด์รายวัน", 
+        "📋 ตารางตัวเลข", 
+        "🍜 สินค้าขายดี"
+    ])
+
+    # --- TAB 1: ยอดรวมสาขา ---
+    with tab_branch:
+        if not df_filtered.empty:
+            render_branch_visualizations(df_filtered)
+        else:
+            st.info("ไม่พบข้อมูลยอดขาย (ตามเงื่อนไขการกรองปัจจุบัน)")
+
+    # --- TAB 2: เทรนด์รายวัน ---
+    with tab_trend:
+        st.markdown("##### 📈 แนวโน้มยอดขายรายวัน")
+        if not df_filtered.empty and 'Parsed_Date' in df_filtered.columns and df_filtered['Parsed_Date'].notna().any():
+            valid_dates = df_filtered[df_filtered['Parsed_Date'].notna()].copy()
+            valid_dates['Date_Str'] = valid_dates['Parsed_Date'].dt.strftime('%Y-%m-%d')
+            daily_sales = valid_dates.groupby('Date_Str')['GRANDTOTAL'].sum().reset_index()
+            daily_sales.columns = ['วันที่', 'ยอดขาย']
+            daily_sales = daily_sales.sort_values('วันที่')
+            
+            if not daily_sales.empty:
+                if HAS_PLOTLY:
+                    fig_line = px.line(daily_sales, x='วันที่', y='ยอดขาย', markers=True, line_shape='linear')
+                    fig_line.update_traces(line_color='#2b9e3e', line_width=3)
+                    fig_line.update_layout(height=400, xaxis_title="วันที่", yaxis_title="ยอดขาย (บาท)", plot_bgcolor='rgba(0,0,0,0)')
+                    st.plotly_chart(fig_line, use_container_width=True)
+                else:
+                    st.line_chart(daily_sales.set_index('วันที่')['ยอดขาย'])
+            else:
+                st.info("ไม่พบข้อมูลยอดขายรายวันตามเงื่อนไขการกรองที่เลือก")
+        else:
+            st.info("ไม่พบข้อมูลวันที่ในการประมวลผลเทรนด์รายวัน")
+
+    # --- TAB 3: ตารางตัวเลข ---
+    with tab_table:
+        st.markdown("##### 📋 ตารางสรุปยอดขายแยกตามสาขา")
+        if not df_filtered.empty and 'GRANDTOTAL' in df_filtered.columns and 'NAME' in df_filtered.columns:
+            has_bill_no = 'BILL_NO' in df_filtered.columns and df_filtered['BILL_NO'].notna().any()
+            
+            if has_bill_no:
+                branch_table = df_filtered.groupby('NAME').agg(
+                    ยอดขายรวม=('GRANDTOTAL', 'sum'),
+                    จำนวนบิล=('BILL_NO', 'nunique')
+                ).reset_index()
+            else:
+                branch_table = df_filtered.groupby('NAME').agg(
+                    ยอดขายรวม=('GRANDTOTAL', 'sum'),
+                    จำนวนบิล=('GRANDTOTAL', 'count')
+                ).reset_index()
+                
+            branch_table.columns = ['สาขา', 'ยอดขายรวม (บาท)', 'จำนวนบิล']
+            
+            branch_table['ยอดเฉลี่ยต่อบิล (บาท)'] = 0.0
+            mask = branch_table['จำนวนบิล'] > 0
+            branch_table.loc[mask, 'ยอดเฉลี่ยต่อบิล (บาท)'] = (
+                branch_table.loc[mask, 'ยอดขายรวม (บาท)'] / branch_table.loc[mask, 'จำนวนบิล']
+            )
+            
+            branch_table = branch_table.sort_values(by='ยอดขายรวม (บาท)', ascending=False)
+            
+            st.dataframe(
+                branch_table.style.format({
+                    'ยอดขายรวม (บาท)': '฿{:,.2f}',
+                    'จำนวนบิล': '{:,.0f}',
+                    'ยอดเฉลี่ยต่อบิล (บาท)': '฿{:,.2f}'
+                }),
+                use_container_width=True,
+                hide_index=True
+            )
+        else:
+            st.info("ไม่พบข้อมูลสำหรับการแสดงตารางตามเงื่อนไขที่เลือก")
+
+    # --- TAB 4: สินค้าขายดี ---
+    with tab_bestseller:
+        st.markdown("##### 🍜 รายงานสินค้าขายดี (ดึงข้อมูลจากไฟล์ BPLUS)")
+        
+        df_product = load_bplus_data_from_folder()
+        
+        if df_product.empty:
+            st.info("💡 ไม่พบไฟล์ BPLUS ในระบบ สามารถเลือกอัปโหลดไฟล์ BPLUS ตรงนี้เพื่อประมวลผลทันทีได้ครับ")
+            uploaded_pfile = st.file_uploader(
+                "📂 เลือกอัปโหลดไฟล์ BPLUS (.csv หรือ .xlsx):", 
+                type=['csv', 'xlsx', 'xls'],
+                key="bplus_file_uploader"
+            )
+            if uploaded_pfile is not None:
+                try:
+                    if uploaded_pfile.name.lower().endswith('.csv'):
+                        for enc in ['utf-8-sig', 'tis-620', 'cp838', 'latin1', 'utf-8']:
+                            try:
+                                df_raw = pd.read_csv(uploaded_pfile, encoding=enc, low_memory=False)
+                                break
+                            except Exception:
+                                df_raw = pd.DataFrame()
+                    else:
+                        df_raw = pd.read_excel(uploaded_pfile)
+                    if not df_raw.empty:
+                        df_product = process_product_dataframe(df_raw)
+                except Exception as e:
+                    st.error(f"เกิดข้อผิดพลาดในการอ่านไฟล์: {e}")
+
+        if not df_product.empty:
+            df_p_filtered = df_product.copy()
+            
+            # กรองสาขา
+            if selected_branches and 'NAME' in df_p_filtered.columns:
+                df_p_filtered = df_p_filtered[df_p_filtered['NAME'].isin(selected_branches)]
+            
+            # กรองปี พ.ศ.
+            if selected_years and 'Year_BE' in df_p_filtered.columns:
+                df_p_filtered = df_p_filtered[df_p_filtered['Year_BE'].isin(selected_years)]
+
+            # กรองวันที่
+            if quick_time != "ทั้งหมดในระบบ" and filter_start_date and filter_end_date and 'Parsed_Date' in df_p_filtered.columns and df_p_filtered['Parsed_Date'].notna().any():
+                start_ts = pd.to_datetime(filter_start_date)
+                end_ts = pd.to_datetime(filter_end_date) + pd.Timedelta(days=1) - pd.Timedelta(nanoseconds=1)
+                
+                df_p_filtered = df_p_filtered[
+                    df_p_filtered['Parsed_Date'].notna() &
+                    (df_p_filtered['Parsed_Date'] >= start_ts) & 
+                    (df_p_filtered['Parsed_Date'] <= end_ts)
+                ]
+
+            # ดึงชื่อสินค้า
+            p_col = 'PRODUCT_NAME_CUSTOM' if 'PRODUCT_NAME_CUSTOM' in df_p_filtered.columns else None
+            
+            if not p_col:
+                possible_p_cols = ['TRD_SH_NAME', 'DI_PRD_NAME', 'GOODS_NAME', 'DI_NAME', 'PRD_NAME', 'GOODSNAME', 'GOODS_DESC', 'ARTICLE_NAME', 'SHOW_NAME', 'PDATA_NAME', 'PRODUCT_NAME', 'P_NAME', 'NAME_1', 'ชื่อสินค้า', 'PRODUCT', 'ITEM_NAME', 'DESCR', 'ITEMNAME', 'DESCRIPTION', 'TITLE', 'สินค้า', 'รายการ', 'ชื่อรายการ', 'NAME_TH']
+                p_col = next((c for c in possible_p_cols if c in df_p_filtered.columns), None)
+
+            if not p_col:
+                str_cols = [c for c in df_p_filtered.columns if c not in ['GRANDTOTAL', 'QTY', 'Year_BE', 'Parsed_Date', 'HAS_BRANCH_COL']]
+                if str_cols:
+                    p_col = str_cols[0]
+
+            if p_col and not df_p_filtered.empty:
+                u_col = 'UNIT_CUSTOM' if 'UNIT_CUSTOM' in df_p_filtered.columns else None
+                has_bill = 'BILL_NO' in df_p_filtered.columns and df_p_filtered['BILL_NO'].notna().any()
+                
+                group_cols = [p_col, u_col] if u_col else [p_col]
+                
+                agg_dict = {
+                    'GRANDTOTAL': 'sum',
+                    'QTY': 'sum'
+                }
+                if has_bill:
+                    agg_dict['BILL_NO'] = 'nunique'
+                    
+                top_products = df_p_filtered.groupby(group_cols).agg(agg_dict).reset_index()
+                
+                rename_map = {
+                    p_col: 'ชื่อสินค้า',
+                    'GRANDTOTAL': 'ยอดขายรวม',
+                    'QTY': 'จำนวนที่ขาย'
+                }
+                if u_col:
+                    rename_map[u_col] = 'หน่วย'
+                if has_bill:
+                    rename_map['BILL_NO'] = 'บิลที่มีสินค้านี้'
+                    
+                top_products.rename(columns=rename_map, inplace=True)
+                
+                if not u_col:
+                    top_products.insert(1, 'หน่วย', 'ไม่ระบุ')
+                
+                top_products = top_products[top_products['ยอดขายรวม'] > 0]
+                top_products = top_products.sort_values(by='จำนวนที่ขาย', ascending=False).head(20).reset_index(drop=True)
+                top_products.insert(0, 'ลำดับ', range(1, len(top_products) + 1))
+                
+                if not top_products.empty:
+                    col_b1, col_b2 = st.columns([1.3, 1])
+                    with col_b1:
+                        st.markdown("###### Top 10 สินค้าขายดีที่สุด (ยอดขาย)")
+                        
+                        df_top10_chart = top_products.sort_values(by='ยอดขายรวม', ascending=True).tail(10)
+                        max_sales = df_top10_chart['ยอดขายรวม'].max()
+                        
+                        if HAS_PLOTLY:
+                            fig_pbar = px.bar(
+                                df_top10_chart,
+                                y='ชื่อสินค้า',
+                                x='ยอดขายรวม',
+                                orientation='h',
+                                text='ยอดขายรวม',
+                                color='ชื่อสินค้า',
+                                color_discrete_sequence=px.colors.qualitative.Bold
+                            )
+                            
+                            fig_pbar.update_traces(
+                                texttemplate='฿%{text:,.2f}', 
+                                textposition='outside', 
+                                cliponaxis=False
+                            )
+                            
+                            fig_pbar.update_layout(
+                                xaxis_title="ยอดขาย (บาท)", 
+                                yaxis_title="", 
+                                height=430, 
+                                margin=dict(l=10, r=90, t=20, b=20), 
+                                showlegend=False,
+                                plot_bgcolor='rgba(0,0,0,0)', 
+                                paper_bgcolor='rgba(0,0,0,0)'
+                            )
+                            
+                            fig_pbar.update_xaxes(range=[0, max_sales * 1.25])
+                            st.plotly_chart(fig_pbar, use_container_width=True)
+                        else:
+                            st.bar_chart(df_top10_chart.set_index('ชื่อสินค้า')['ยอดขายรวม'])
+
+                    with col_b2:
+                        st.markdown("###### ตารางรายละเอียดสินค้าขายดี 20 อันดับแรก")
+                        
+                        format_dict = {'ยอดขายรวม': '฿{:,.2f}', 'จำนวนที่ขาย': '{:,.0f}'}
+                        if 'บิลที่มีสินค้านี้' in top_products.columns:
+                            format_dict['บิลที่มีสินค้านี้'] = '{:,.0f}'
+
+                        st.dataframe(
+                            top_products.style.format(format_dict),
+                            use_container_width=True, 
+                            height=430,
+                            hide_index=True
+                        )
+                else:
+                    st.info("ไม่พบรายการสินค้าที่มียอดขายมากกว่า 0 บาท ตามเงื่อนไขการกรองที่เลือก")
+            else:
+                st.info("ไม่พบข้อมูลสินค้าตามเงื่อนไขการกรองที่เลือก")
+
+except Exception as e:
+    st.error("⚠️ เกิดข้อผิดพลาดขณะรันระบบ (Application Error Detected)")
+    st.info("รายละเอียดข้อผิดพลาดถูกแสดงด้านล่าง เพื่อช่วยในการวิเคราะห์สาเหตุ:")
+    st.exception(e)

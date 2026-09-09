@@ -126,23 +126,30 @@ def get_branch_series(df):
     return pd.Series('ไม่ระบุสาขา', index=df.index)
 
 def get_bill_series(df):
-    """ค้นหาคอลัมน์เลขที่บิล DI_REF พร้อมจัดการค่าว่างเพื่อไม่ให้นับผิดพลาด"""
+    """ค้นหาคอลัมน์เลขที่บิล (ฟังก์ชันแก้ไขป้องกับ App Crash)"""
     bill_candidates = [
         'DI_REF', 'DOC_NO', 'DI_NO', 'BILL_NO', 'INVOICE_NO', 'REF_NO', 'TRD_REF',
         'เลขที่บิล', 'เลขที่เอกสาร', 'เลขที่', 'DOC_CODE'
     ]
     df_cols_upper = {str(c).strip().replace('\ufeff', '').upper(): c for c in df.columns}
     
+    def clean_bill_no(val):
+        if pd.isna(val):
+            return pd.NA
+        val_str = str(val).strip()
+        # กรองคำที่เป็นค่าว่างหรือขยะออก ป้องกันนับซ้ำ
+        if val_str.lower() in {'nan', 'none', 'null', '', 'nat', '<na>'}:
+            return pd.NA
+        return val_str
+
     for col in bill_candidates:
         if col in df_cols_upper:
             real_col = df_cols_upper[col]
-            s = df[real_col].astype(str).str.strip()
-            # แทนที่ข้อความขยะ/ค่าว่างด้วยค่า None เพื่อให้ .nunique() ไม่นำไปนับรวม
-            s = s.replace(['nan', 'None', 'NaN', 'null', '', 'NaT', '<NA>'], None)
+            s = df[real_col].apply(clean_bill_no)
             if s.notna().any():
                 return s
                 
-    return pd.Series(None, index=df.index, dtype='object')
+    return pd.Series(pd.NA, index=df.index)
 
 def parse_date_column(df):
     """ค้นหาและแปลงคอลัมน์วันที่"""
@@ -440,20 +447,18 @@ if not df_filtered.empty:
         ]
 
 # ==========================================
-# 5. MAIN METRICS DISPLAY (อัปเดตการคำนวณบิล)
+# 5. MAIN METRICS DISPLAY
 # ==========================================
 if not df_filtered.empty:
     total_sales = df_filtered['GRANDTOTAL'].sum()
     
-    # ดึงค่าว่ามีคอลัมน์บิลหรือไม่
     has_bill_col = 'BILL_NO' in df_filtered.columns and df_filtered['BILL_NO'].notna().any()
     
     if has_bill_col:
-        # ใช้ .nunique() เพื่อหาจำนวนบิลไม่ซ้ำ
-        total_bills = df_filtered['BILL_NO'].nunique(dropna=True)
-        bill_remark = "(นับจากเอกสารไม่ซ้ำกัน)"
+        # นับเฉพาะบิลที่ไม่ซ้ำกัน
+        total_bills = df_filtered['BILL_NO'].nunique()
+        bill_remark = "(นับจากเอกสารไม่ซ้ำ)"
     else:
-        # นับบรรทัดเหมือนเดิม หากไม่มีรหัสบิล
         total_bills = len(df_filtered)
         bill_remark = "(นับจากจำนวนบรรทัด)"
         
@@ -568,25 +573,25 @@ with tab_trend:
     else:
         st.info("ไม่พบข้อมูลวันที่ในการประมวลผลเทรนด์รายวัน")
 
-# --- TAB 3: ตารางตัวเลข (อัปเดตการคำนวณบิล) ---
+# --- TAB 3: ตารางตัวเลข ---
 with tab_table:
     st.markdown("##### 📋 ตารางสรุปยอดขายแยกตามสาขา")
     if not df_filtered.empty and 'GRANDTOTAL' in df_filtered.columns:
         has_bill_no = 'BILL_NO' in df_filtered.columns and df_filtered['BILL_NO'].notna().any()
         
+        # ปรับการรวมตารางให้ปลอดภัยขึ้น
         if has_bill_no:
-            # ใช้ Named Aggregation เพื่อนับยอดขายและนับบิลแบบไม่ซ้ำ
             branch_table = df_filtered.groupby('NAME').agg(
                 ยอดขายรวม_sum=('GRANDTOTAL', 'sum'),
                 บิล_nunique=('BILL_NO', 'nunique')
             ).reset_index()
-            branch_table.columns = ['สาขา', 'ยอดขายรวม (บาท)', 'จำนวนบิล']
         else:
             branch_table = df_filtered.groupby('NAME').agg(
                 ยอดขายรวม_sum=('GRANDTOTAL', 'sum'),
-                บิล_count=('GRANDTOTAL', 'count')
+                บิล_nunique=('GRANDTOTAL', 'count')
             ).reset_index()
-            branch_table.columns = ['สาขา', 'ยอดขายรวม (บาท)', 'จำนวนบิล']
+            
+        branch_table.columns = ['สาขา', 'ยอดขายรวม (บาท)', 'จำนวนบิล']
         
         branch_table['ยอดเฉลี่ยต่อบิล (บาท)'] = 0.0
         mask = branch_table['จำนวนบิล'] > 0
@@ -672,13 +677,11 @@ with tab_bestseller:
             
             group_cols = [p_col, u_col] if u_col else [p_col]
             
-            # คำนวณผ่าน Dictionary
             agg_dict = {
                 'GRANDTOTAL': 'sum',
                 'QTY': 'sum'
             }
             if has_bill:
-                # จำนวนบิลของสินค้านั้นๆ (สินค้านี้ปรากฏอยู่ในกี่เอกสารที่ไม่ซ้ำกัน)
                 agg_dict['BILL_NO'] = 'nunique'
                 
             top_products = df_p_filtered.groupby(group_cols).agg(agg_dict).reset_index()

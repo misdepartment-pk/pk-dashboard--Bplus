@@ -84,7 +84,7 @@ def clean_numeric(series):
     return pd.to_numeric(s, errors='coerce').fillna(0.0)
 
 def get_sales_amount_series(df):
-    """ค้นหาคอลัมน์ยอดขายอย่างฉลาดและดึงข้อมูลออกมา"""
+    """ค้นหาคอลัมน์ยอดขายอย่างฉลาด"""
     candidates = [
         'GRANDTOTAL_CUSTOM', 'PDATA_NET_AMT', 
         'TRD_B_AMT', 'TRD_B_AMNT', 'TRD_AMOUNT', 'TRD_AMT', 'TRD_NET', 'TRD_VAL', 'TRD_G_AMT',
@@ -126,21 +126,22 @@ def get_branch_series(df):
     return pd.Series('ไม่ระบุสาขา', index=df.index)
 
 def get_bill_series(df):
-    """ค้นหาคอลัมน์เลขที่บิล DI_REF"""
+    """ค้นหาคอลัมน์เลขที่บิล DI_REF พร้อมจัดการค่าว่างเพื่อไม่ให้นับผิดพลาด"""
     bill_candidates = [
         'DI_REF', 'DOC_NO', 'DI_NO', 'BILL_NO', 'INVOICE_NO', 'REF_NO', 'TRD_REF',
-        'เลขที่บิล', 'เลขที่เอกสาร', 'เลขที่'
+        'เลขที่บิล', 'เลขที่เอกสาร', 'เลขที่', 'DOC_CODE'
     ]
     df_cols_upper = {str(c).strip().replace('\ufeff', '').upper(): c for c in df.columns}
     
     for col in bill_candidates:
-        col_u = col.upper()
-        if col_u in df_cols_upper:
-            real_col = df_cols_upper[col_u]
+        if col in df_cols_upper:
+            real_col = df_cols_upper[col]
             s = df[real_col].astype(str).str.strip()
-            s = s.replace(['nan', 'None', 'NaN', 'null', ''], None)
-            return s
-            
+            # แทนที่ข้อความขยะ/ค่าว่างด้วยค่า None เพื่อให้ .nunique() ไม่นำไปนับรวม
+            s = s.replace(['nan', 'None', 'NaN', 'null', '', 'NaT', '<NA>'], None)
+            if s.notna().any():
+                return s
+                
     return pd.Series(None, index=df.index, dtype='object')
 
 def parse_date_column(df):
@@ -218,7 +219,7 @@ def parse_date_column(df):
     return df
 
 def load_all_sales_data():
-    """โหลดข้อมูลยอดขายหลัก (ยอดรวม) จากไฟล์ในโฟลเดอร์ปัจจุบัน"""
+    """โหลดข้อมูลยอดขายหลัก"""
     folder_path = "."
     if not os.path.exists(folder_path):
         return pd.DataFrame()
@@ -370,15 +371,12 @@ df_sales = load_all_sales_data()
 # --- SIDEBAR FILTERS ---
 st.sidebar.markdown("### 🔍 เมนูกรองข้อมูล")
 
-# 1. กรองสาขา
 available_branches = sorted(list(df_sales['NAME'].dropna().unique())) if not df_sales.empty and 'NAME' in df_sales.columns else []
 selected_branches = st.sidebar.multiselect("🏪 เลือกสาขา:", options=available_branches, default=available_branches)
 
-# 2. กรองปี พ.ศ.
 available_years = sorted([int(y) for y in df_sales['Year_BE'].dropna().unique()], reverse=True) if not df_sales.empty and 'Year_BE' in df_sales.columns and df_sales['Year_BE'].notna().any() else []
 selected_years = st.sidebar.multiselect("📅 เลือกปี พ.ศ.:", options=available_years, default=available_years)
 
-# 3. กรองช่วงเวลา / วันที่
 st.sidebar.markdown("---")
 st.sidebar.markdown("##### 📅 กรองตามช่วงวันที่")
 
@@ -442,24 +440,33 @@ if not df_filtered.empty:
         ]
 
 # ==========================================
-# 5. MAIN METRICS DISPLAY
+# 5. MAIN METRICS DISPLAY (อัปเดตการคำนวณบิล)
 # ==========================================
 if not df_filtered.empty:
     total_sales = df_filtered['GRANDTOTAL'].sum()
-    # ตรวจสอบการนับบิลด้วย DI_REF แบบไม่ซ้ำ (Unique)
-    if 'BILL_NO' in df_filtered.columns and df_filtered['BILL_NO'].notna().any():
-        total_bills = df_filtered['BILL_NO'].nunique()
+    
+    # ดึงค่าว่ามีคอลัมน์บิลหรือไม่
+    has_bill_col = 'BILL_NO' in df_filtered.columns and df_filtered['BILL_NO'].notna().any()
+    
+    if has_bill_col:
+        # ใช้ .nunique() เพื่อหาจำนวนบิลไม่ซ้ำ
+        total_bills = df_filtered['BILL_NO'].nunique(dropna=True)
+        bill_remark = "(นับจากเอกสารไม่ซ้ำกัน)"
     else:
+        # นับบรรทัดเหมือนเดิม หากไม่มีรหัสบิล
         total_bills = len(df_filtered)
+        bill_remark = "(นับจากจำนวนบรรทัด)"
+        
     avg_per_bill = total_sales / total_bills if total_bills > 0 else 0.0
 else:
     total_sales, total_bills, avg_per_bill = 0.0, 0, 0.0
+    bill_remark = ""
 
 col_m1, col_m2, col_m3 = st.columns(3)
 with col_m1:
     st.markdown(f'<div class="metric-card"><div class="metric-title">ยอดขายรวมทั้งหมด (บาท)</div><div class="metric-value">฿{total_sales:,.2f}</div></div>', unsafe_allow_html=True)
 with col_m2:
-    st.markdown(f'<div class="metric-card"><div class="metric-title">จำนวนรายการ (บิล)</div><div class="metric-value">{total_bills:,.0f}</div></div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="metric-card"><div class="metric-title">จำนวนบิล <span style="font-size:11px; color:#94A3B8;">{bill_remark}</span></div><div class="metric-value">{total_bills:,.0f}</div></div>', unsafe_allow_html=True)
 with col_m3:
     st.markdown(f'<div class="metric-card"><div class="metric-title">ยอดเฉลี่ยต่อบิล (บาท)</div><div class="metric-value">฿{avg_per_bill:,.2f}</div></div>', unsafe_allow_html=True)
 
@@ -561,22 +568,24 @@ with tab_trend:
     else:
         st.info("ไม่พบข้อมูลวันที่ในการประมวลผลเทรนด์รายวัน")
 
-# --- TAB 3: ตารางตัวเลข ---
+# --- TAB 3: ตารางตัวเลข (อัปเดตการคำนวณบิล) ---
 with tab_table:
     st.markdown("##### 📋 ตารางสรุปยอดขายแยกตามสาขา")
     if not df_filtered.empty and 'GRANDTOTAL' in df_filtered.columns:
         has_bill_no = 'BILL_NO' in df_filtered.columns and df_filtered['BILL_NO'].notna().any()
         
         if has_bill_no:
-            branch_table = df_filtered.groupby('NAME').agg({
-                'GRANDTOTAL': 'sum',
-                'BILL_NO': 'nunique'
-            }).reset_index()
+            # ใช้ Named Aggregation เพื่อนับยอดขายและนับบิลแบบไม่ซ้ำ
+            branch_table = df_filtered.groupby('NAME').agg(
+                ยอดขายรวม_sum=('GRANDTOTAL', 'sum'),
+                บิล_nunique=('BILL_NO', 'nunique')
+            ).reset_index()
             branch_table.columns = ['สาขา', 'ยอดขายรวม (บาท)', 'จำนวนบิล']
         else:
-            branch_table = df_filtered.groupby('NAME').agg({
-                'GRANDTOTAL': ['sum', 'count']
-            }).reset_index()
+            branch_table = df_filtered.groupby('NAME').agg(
+                ยอดขายรวม_sum=('GRANDTOTAL', 'sum'),
+                บิล_count=('GRANDTOTAL', 'count')
+            ).reset_index()
             branch_table.columns = ['สาขา', 'ยอดขายรวม (บาท)', 'จำนวนบิล']
         
         branch_table['ยอดเฉลี่ยต่อบิล (บาท)'] = 0.0
@@ -663,12 +672,13 @@ with tab_bestseller:
             
             group_cols = [p_col, u_col] if u_col else [p_col]
             
-            # คำนวณจำนวนบิลผ่าน DI_REF
+            # คำนวณผ่าน Dictionary
             agg_dict = {
                 'GRANDTOTAL': 'sum',
                 'QTY': 'sum'
             }
             if has_bill:
+                # จำนวนบิลของสินค้านั้นๆ (สินค้านี้ปรากฏอยู่ในกี่เอกสารที่ไม่ซ้ำกัน)
                 agg_dict['BILL_NO'] = 'nunique'
                 
             top_products = df_p_filtered.groupby(group_cols).agg(agg_dict).reset_index()
@@ -681,7 +691,7 @@ with tab_bestseller:
             if u_col:
                 rename_map[u_col] = 'หน่วย'
             if has_bill:
-                rename_map['BILL_NO'] = 'จำนวนบิล'
+                rename_map['BILL_NO'] = 'บิลที่มีสินค้านี้'
                 
             top_products.rename(columns=rename_map, inplace=True)
             
@@ -733,8 +743,8 @@ with tab_bestseller:
                     st.markdown("###### ตารางรายละเอียดสินค้าขายดี 20 อันดับแรก")
                     
                     format_dict = {'ยอดขายรวม': '฿{:,.2f}', 'จำนวนที่ขาย': '{:,.0f}'}
-                    if 'จำนวนบิล' in top_products.columns:
-                        format_dict['จำนวนบิล'] = '{:,.0f}'
+                    if 'บิลที่มีสินค้านี้' in top_products.columns:
+                        format_dict['บิลที่มีสินค้านี้'] = '{:,.0f}'
 
                     st.dataframe(
                         top_products.style.format(format_dict),

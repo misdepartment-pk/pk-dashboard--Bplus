@@ -383,23 +383,23 @@ try:
         return pd.DataFrame()
 
     # ==========================================
-    # 3. HEADER & LOGO
+    # 3. HEADER & LOGO (ปรับแก้ข้อความตรงนี้)
     # ==========================================
-    col_header, col_space = st.columns([2.5, 1.5])
+    col_header, col_space = st.columns([3.8, 0.2])
 
     with col_header:
-        col_img, col_txt = st.columns([1, 4])
+        col_img, col_txt = st.columns([1, 6])
         with col_img:
             if os.path.exists("logo.png"):
-                st.image("logo.png", width=100)
+                st.image("logo.png", width=95)
             else:
                 st.markdown("### 🍜")
         with col_txt:
             st.markdown(
                 """
-                <div style="display: flex; align-items: center; height: 100%; padding-top: 12px;">
-                    <h2 style="color: #2b9e3e; font-weight: 800; font-size: 26px; margin: 0; line-height: 1.2;">
-                        PK NOODLE SHOP COMPANY LIMITED
+                <div style="display: flex; align-items: center; height: 100%; padding-top: 10px;">
+                    <h2 style="color: #2b9e3e; font-weight: 800; font-size: 24px; margin: 0; line-height: 1.3;">
+                        PK NOODLE SHOP COMPANY LIMITED (BPLUS 10 ตุลาคม 2568 - 4 สิงหาคม 2569)
                     </h2>
                 </div>
                 """, 
@@ -409,7 +409,7 @@ try:
     st.markdown('<div class="trick-banner">🧮 <b>ทริค:</b> เมนูกรองข้อมูลอยู่ด้านซ้ายมือ (หากซ่อนอยู่ให้กดปุ่ม > เพื่อเปิด)</div>', unsafe_allow_html=True)
 
     if not HAS_PLOTLY:
-        st.warning("⚠️ ระบบทำงานในโหมดกราฟพื้นฐาน (โปรดเพิ่ม plotly ในไฟล์ requirements.txt บน GitHub เพื่อเปิดใช้กราฟสถิติแบบละเอียด)")
+        st.warning("⚠️ ระบบทำงานในโหมดกราฟพื้นฐาน (โปรดเพิ่ม plotly ในไฟล์ requirements.txt บน GitHub เพื่อเปิดใช้กราฟสถิติแบบรายละเอียด)")
 
     # ==========================================
     # 4. LOAD & FILTER MAIN DATA

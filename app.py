@@ -353,7 +353,7 @@ try:
             return pd.DataFrame()
         
         files = os.listdir(folder_path)
-        bplus_files = [f for f in files if 'bplus' in f.lower() and f.lower().endswith(('.csv', '.xlsx', '.xls'))]
+        bplus_files = [f for f in files if ('bplus' in f.lower() or 'product' in f.lower()) and f.lower().endswith(('.csv', '.xlsx', '.xls'))]
         
         if not bplus_files:
             return pd.DataFrame()
@@ -666,16 +666,24 @@ try:
 
     # --- TAB 4: สินค้าขายดี ---
     with tab_bestseller:
-        st.markdown("##### 🍜 รายงานสินค้าขายดี (ดึงข้อมูลจากไฟล์ BPLUS)")
-        
-        df_product = load_bplus_data_from_folder()
-        
-        if df_product.empty:
-            st.info("💡 ไม่พบไฟล์ BPLUS ในระบบ สามารถเลือกอัปโหลดไฟล์ BPLUS ตรงนี้เพื่อประมวลผลทันทีได้ครับ")
+        st.markdown("##### 🍜 รายงานสินค้าขายดี")
+
+        # 1. ลองดึงข้อมูลจากโฟลเดอร์ BPLUS
+        df_product_source = load_bplus_data_from_folder()
+
+        # 2. หากในโฟลเดอร์ไม่มี BPLUS ลองดูว่าไฟล์หลัก df_sales มีชื่อสินค้าหรือไม่
+        if df_product_source.empty and not df_sales.empty:
+            possible_p_cols = ['PDATA_NAME', 'PRODUCT_NAME', 'TRD_SH_NAME', 'GOODS_NAME', 'ชื่อสินค้า', 'รายการ', 'ITEM_NAME']
+            cols_upper = [str(c).upper() for c in df_sales.columns]
+            if any(p in cols_upper for p in possible_p_cols):
+                df_product_source = process_product_dataframe(df_sales.copy())
+
+        # 3. กล่องรองรับการอัปโหลดไฟล์ BPLUS เพิ่มเติม
+        with st.expander("📂 อัปโหลด / เปลี่ยนไฟล์ข้อมูลสินค้า BPLUS (.csv หรือ .xlsx)", expanded=(df_product_source.empty)):
             uploaded_pfile = st.file_uploader(
-                "📂 เลือกอัปโหลดไฟล์ BPLUS (.csv หรือ .xlsx):", 
+                "เลือกไฟล์ BPLUS จากเครื่องของคุณ:", 
                 type=['csv', 'xlsx', 'xls'],
-                key="bplus_file_uploader"
+                key="bplus_file_uploader_tab4"
             )
             if uploaded_pfile is not None:
                 try:
@@ -683,18 +691,24 @@ try:
                         for enc in ['utf-8-sig', 'tis-620', 'cp838', 'latin1', 'utf-8']:
                             try:
                                 df_raw = pd.read_csv(uploaded_pfile, encoding=enc, low_memory=False)
-                                break
+                                if not df_raw.empty:
+                                    break
                             except Exception:
                                 df_raw = pd.DataFrame()
                     else:
                         df_raw = pd.read_excel(uploaded_pfile)
+                        
                     if not df_raw.empty:
-                        df_product = process_product_dataframe(df_raw)
+                        df_product_source = process_product_dataframe(df_raw)
+                        st.success(f"โหลดข้อมูลสำเร็จ {len(df_product_source):,} รายการ")
                 except Exception as e:
                     st.error(f"เกิดข้อผิดพลาดในการอ่านไฟล์: {e}")
 
-        if not df_product.empty:
-            df_p_filtered = df_product.copy()
+        # 4. ตรวจสอบการแสดงผล
+        if df_product_source.empty:
+            st.info("💡 **ยังไม่มีข้อมูลสินค้า BPLUS ในระบบ**\n\nโปรดกดอัปโหลดไฟล์ BPLUS ในช่อง **'📂 อัปโหลด / เปลี่ยนไฟล์ข้อมูลสินค้า BPLUS'** ด้านบนได้เลยครับ")
+        else:
+            df_p_filtered = df_product_source.copy()
             
             # กรองสาขา
             if selected_branches and 'NAME' in df_p_filtered.columns:
@@ -715,109 +729,113 @@ try:
                     (df_p_filtered['Parsed_Date'] <= end_ts)
                 ]
 
-            # ดึงชื่อสินค้า
-            p_col = 'PRODUCT_NAME_CUSTOM' if 'PRODUCT_NAME_CUSTOM' in df_p_filtered.columns else None
-            
-            if not p_col:
-                possible_p_cols = ['TRD_SH_NAME', 'DI_PRD_NAME', 'GOODS_NAME', 'DI_NAME', 'PRD_NAME', 'GOODSNAME', 'GOODS_DESC', 'ARTICLE_NAME', 'SHOW_NAME', 'PDATA_NAME', 'PRODUCT_NAME', 'P_NAME', 'NAME_1', 'ชื่อสินค้า', 'PRODUCT', 'ITEM_NAME', 'DESCR', 'ITEMNAME', 'DESCRIPTION', 'TITLE', 'สินค้า', 'รายการ', 'ชื่อรายการ', 'NAME_TH']
-                p_col = next((c for c in possible_p_cols if c in df_p_filtered.columns), None)
-
-            if not p_col:
-                str_cols = [c for c in df_p_filtered.columns if c not in ['GRANDTOTAL', 'QTY', 'Year_BE', 'Parsed_Date', 'HAS_BRANCH_COL']]
-                if str_cols:
-                    p_col = str_cols[0]
-
-            if p_col and not df_p_filtered.empty:
-                u_col = 'UNIT_CUSTOM' if 'UNIT_CUSTOM' in df_p_filtered.columns else None
-                has_bill = 'BILL_NO' in df_p_filtered.columns and df_p_filtered['BILL_NO'].notna().any()
-                
-                group_cols = [p_col, u_col] if u_col else [p_col]
-                
-                agg_dict = {
-                    'GRANDTOTAL': 'sum',
-                    'QTY': 'sum'
-                }
-                if has_bill:
-                    agg_dict['BILL_NO'] = 'nunique'
-                    
-                top_products = df_p_filtered.groupby(group_cols).agg(agg_dict).reset_index()
-                
-                rename_map = {
-                    p_col: 'ชื่อสินค้า',
-                    'GRANDTOTAL': 'ยอดขายรวม',
-                    'QTY': 'จำนวนที่ขาย'
-                }
-                if u_col:
-                    rename_map[u_col] = 'หน่วย'
-                if has_bill:
-                    rename_map['BILL_NO'] = 'บิลที่มีสินค้านี้'
-                    
-                top_products.rename(columns=rename_map, inplace=True)
-                
-                if not u_col:
-                    top_products.insert(1, 'หน่วย', 'ไม่ระบุ')
-                
-                top_products = top_products[top_products['ยอดขายรวม'] > 0]
-                top_products = top_products.sort_values(by='จำนวนที่ขาย', ascending=False).head(20).reset_index(drop=True)
-                top_products.insert(0, 'ลำดับ', range(1, len(top_products) + 1))
-                
-                if not top_products.empty:
-                    col_b1, col_b2 = st.columns([1.3, 1])
-                    with col_b1:
-                        st.markdown("###### Top 10 สินค้าขายดีที่สุด (ยอดขาย)")
-                        
-                        df_top10_chart = top_products.sort_values(by='ยอดขายรวม', ascending=True).tail(10)
-                        max_sales = df_top10_chart['ยอดขายรวม'].max()
-                        
-                        if HAS_PLOTLY:
-                            fig_pbar = px.bar(
-                                df_top10_chart,
-                                y='ชื่อสินค้า',
-                                x='ยอดขายรวม',
-                                orientation='h',
-                                text='ยอดขายรวม',
-                                color='ชื่อสินค้า',
-                                color_discrete_sequence=px.colors.qualitative.Bold
-                            )
-                            
-                            fig_pbar.update_traces(
-                                texttemplate='฿%{text:,.2f}', 
-                                textposition='outside', 
-                                cliponaxis=False
-                            )
-                            
-                            fig_pbar.update_layout(
-                                xaxis_title="ยอดขาย (บาท)", 
-                                yaxis_title="", 
-                                height=430, 
-                                margin=dict(l=10, r=90, t=20, b=20), 
-                                showlegend=False,
-                                plot_bgcolor='rgba(0,0,0,0)', 
-                                paper_bgcolor='rgba(0,0,0,0)'
-                            )
-                            
-                            fig_pbar.update_xaxes(range=[0, max_sales * 1.25])
-                            st.plotly_chart(fig_pbar, use_container_width=True)
-                        else:
-                            st.bar_chart(df_top10_chart.set_index('ชื่อสินค้า')['ยอดขายรวม'])
-
-                    with col_b2:
-                        st.markdown("###### ตารางรายละเอียดสินค้าขายดี 20 อันดับแรก")
-                        
-                        format_dict = {'ยอดขายรวม': '฿{:,.2f}', 'จำนวนที่ขาย': '{:,.0f}'}
-                        if 'บิลที่มีสินค้านี้' in top_products.columns:
-                            format_dict['บิลที่มีสินค้านี้'] = '{:,.0f}'
-
-                        st.dataframe(
-                            top_products.style.format(format_dict),
-                            use_container_width=True, 
-                            height=430,
-                            hide_index=True
-                        )
-                else:
-                    st.info("ไม่พบรายการสินค้าที่มียอดขายมากกว่า 0 บาท ตามเงื่อนไขการกรองที่เลือก")
+            if df_p_filtered.empty:
+                st.warning(f"⚠️ ไม่พบข้อมูลรายการสินค้าในช่วงวันที่ {filter_start_date} ถึง {filter_end_date}\n\n👉 **คำแนะนำ:** ลองปรับช่อง 'เลือกช่วงเวลา' ทางซ้ายมือเป็น **'ทั้งหมดในระบบ'** เพื่อดูรายการสินค้ารวมทั้งหมด")
             else:
-                st.info("ไม่พบข้อมูลสินค้าตามเงื่อนไขการกรองที่เลือก")
+                # ดึงชื่อสินค้า
+                p_col = 'PRODUCT_NAME_CUSTOM' if 'PRODUCT_NAME_CUSTOM' in df_p_filtered.columns else None
+                
+                if not p_col:
+                    possible_p_cols = ['TRD_SH_NAME', 'DI_PRD_NAME', 'GOODS_NAME', 'DI_NAME', 'PRD_NAME', 'GOODSNAME', 'GOODS_DESC', 'ARTICLE_NAME', 'SHOW_NAME', 'PDATA_NAME', 'PRODUCT_NAME', 'P_NAME', 'NAME_1', 'ชื่อสินค้า', 'PRODUCT', 'ITEM_NAME', 'DESCR', 'ITEMNAME', 'DESCRIPTION', 'TITLE', 'สินค้า', 'รายการ', 'ชื่อรายการ', 'NAME_TH']
+                    p_col = next((c for c in possible_p_cols if c in df_p_filtered.columns), None)
+
+                if not p_col:
+                    str_cols = [c for c in df_p_filtered.columns if c not in ['GRANDTOTAL', 'QTY', 'Year_BE', 'Parsed_Date', 'HAS_BRANCH_COL']]
+                    if str_cols:
+                        p_col = str_cols[0]
+
+                if p_col:
+                    u_col = 'UNIT_CUSTOM' if 'UNIT_CUSTOM' in df_p_filtered.columns else None
+                    has_bill = 'BILL_NO' in df_p_filtered.columns and df_p_filtered['BILL_NO'].notna().any()
+                    
+                    group_cols = [p_col]
+                    if u_col and u_col in df_p_filtered.columns:
+                        group_cols.append(u_col)
+                    
+                    agg_dict = {
+                        'GRANDTOTAL': 'sum',
+                        'QTY': 'sum'
+                    }
+                    if has_bill:
+                        agg_dict['BILL_NO'] = 'nunique'
+                        
+                    top_products = df_p_filtered.groupby(group_cols).agg(agg_dict).reset_index()
+                    
+                    rename_map = {
+                        p_col: 'ชื่อสินค้า',
+                        'GRANDTOTAL': 'ยอดขายรวม',
+                        'QTY': 'จำนวนที่ขาย'
+                    }
+                    if u_col and u_col in df_p_filtered.columns:
+                        rename_map[u_col] = 'หน่วย'
+                    if has_bill:
+                        rename_map['BILL_NO'] = 'บิลที่มีสินค้านี้'
+                        
+                    top_products.rename(columns=rename_map, inplace=True)
+                    
+                    if 'หน่วย' not in top_products.columns:
+                        top_products.insert(1, 'หน่วย', 'ไม่ระบุ')
+                    
+                    top_products = top_products[(top_products['ยอดขายรวม'] > 0) | (top_products['จำนวนที่ขาย'] > 0)]
+                    
+                    if top_products.empty:
+                        st.info("ไม่พบรายการสินค้าที่มียอดขายมากกว่า 0 บาท ตามเงื่อนไขที่เลือก")
+                    else:
+                        top_products = top_products.sort_values(by='จำนวนที่ขาย', ascending=False).head(20).reset_index(drop=True)
+                        top_products.insert(0, 'ลำดับ', range(1, len(top_products) + 1))
+                        
+                        col_b1, col_b2 = st.columns([1.3, 1])
+                        with col_b1:
+                            st.markdown("###### Top 10 สินค้าขายดีที่สุด (ตามจำนวน)")
+                            
+                            df_top10_chart = top_products.sort_values(by='จำนวนที่ขาย', ascending=True).tail(10)
+                            max_qty = df_top10_chart['จำนวนที่ขาย'].max()
+                            
+                            if HAS_PLOTLY:
+                                fig_pbar = px.bar(
+                                    df_top10_chart,
+                                    y='ชื่อสินค้า',
+                                    x='จำนวนที่ขาย',
+                                    orientation='h',
+                                    text='จำนวนที่ขาย',
+                                    color='ชื่อสินค้า',
+                                    color_discrete_sequence=px.colors.qualitative.Bold
+                                )
+                                fig_pbar.update_traces(
+                                    texttemplate='%{text:,.0f}', 
+                                    textposition='outside', 
+                                    cliponaxis=False
+                                )
+                                fig_pbar.update_layout(
+                                    xaxis_title="จำนวนที่ขาย", 
+                                    yaxis_title="", 
+                                    height=430, 
+                                    margin=dict(l=10, r=60, t=20, b=20), 
+                                    showlegend=False,
+                                    plot_bgcolor='rgba(0,0,0,0)', 
+                                    paper_bgcolor='rgba(0,0,0,0)'
+                                )
+                                if max_qty > 0:
+                                    fig_pbar.update_xaxes(range=[0, max_qty * 1.25])
+                                st.plotly_chart(fig_pbar, use_container_width=True)
+                            else:
+                                st.bar_chart(df_top10_chart.set_index('ชื่อสินค้า')['จำนวนที่ขาย'])
+
+                        with col_b2:
+                            st.markdown("###### ตารางรายละเอียดสินค้าขายดี 20 อันดับแรก")
+                            
+                            format_dict = {'ยอดขายรวม': '฿{:,.2f}', 'จำนวนที่ขาย': '{:,.0f}'}
+                            if 'บิลที่มีสินค้านี้' in top_products.columns:
+                                format_dict['บิลที่มีสินค้านี้'] = '{:,.0f}'
+
+                            st.dataframe(
+                                top_products.style.format(format_dict),
+                                use_container_width=True, 
+                                height=430,
+                                hide_index=True
+                            )
+                else:
+                    st.error("ไม่พบโครงสร้างคอลัมน์ชื่อสินค้าในไฟล์ที่ระบุ")
 
 except Exception as e:
     st.error("⚠️ เกิดข้อผิดพลาดขณะรันระบบ (Application Error Detected)")

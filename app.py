@@ -274,6 +274,8 @@ def process_product_dataframe(df):
     # เพิ่มคอลัมน์ DI_REF สำหรับนับบิล
     if 'DI_REF' in col_map_upper:
         df['BILL_NO_CUSTOM'] = df[col_map_upper['DI_REF']].astype(str).str.strip()
+        # เคลียร์ค่าว่างเพื่อไม่ให้นับผิด
+        df.loc[df['BILL_NO_CUSTOM'].str.lower().isin(['nan', 'none', '']), 'BILL_NO_CUSTOM'] = None
     else:
         df['BILL_NO_CUSTOM'] = None
         
@@ -635,36 +637,38 @@ with tab_bestseller:
             u_col = 'UNIT_CUSTOM' if 'UNIT_CUSTOM' in df_p_filtered.columns else None
             has_bill = 'BILL_NO_CUSTOM' in df_p_filtered.columns and df_p_filtered['BILL_NO_CUSTOM'].notna().any()
             
-            # Grouping ตามเงื่อนไขที่มี
-            if u_col and has_bill:
-                top_products = df_p_filtered.groupby([p_col, u_col]).agg(
-                    ยอดขายรวม=('GRANDTOTAL', 'sum'),
-                    จำนวนที่ขาย=('QTY', 'sum'),
-                    จำนวนบิล=('BILL_NO_CUSTOM', 'nunique')
-                ).reset_index()
-                top_products.rename(columns={p_col: 'ชื่อสินค้า', u_col: 'หน่วย'}, inplace=True)
-            elif u_col and not has_bill:
-                top_products = df_p_filtered.groupby([p_col, u_col]).agg(
-                    ยอดขายรวม=('GRANDTOTAL', 'sum'),
-                    จำนวนที่ขาย=('QTY', 'sum')
-                ).reset_index()
-                top_products.rename(columns={p_col: 'ชื่อสินค้า', u_col: 'หน่วย'}, inplace=True)
-            elif not u_col and has_bill:
-                top_products = df_p_filtered.groupby(p_col).agg(
-                    ยอดขายรวม=('GRANDTOTAL', 'sum'),
-                    จำนวนที่ขาย=('QTY', 'sum'),
-                    จำนวนบิล=('BILL_NO_CUSTOM', 'nunique')
-                ).reset_index()
-                top_products.rename(columns={p_col: 'ชื่อสินค้า'}, inplace=True)
-                top_products.insert(1, 'หน่วย', 'ไม่ระบุ')
-            else:
-                top_products = df_p_filtered.groupby(p_col).agg(
-                    ยอดขายรวม=('GRANDTOTAL', 'sum'),
-                    จำนวนที่ขาย=('QTY', 'sum')
-                ).reset_index()
-                top_products.rename(columns={p_col: 'ชื่อสินค้า'}, inplace=True)
+            # --- เปลี่ยนวิธี Grouping ใหม่ทั้งหมดให้เสถียร 100% ---
+            group_cols = [p_col, u_col] if u_col else [p_col]
+            
+            # 1. กำหนดรูปแบบคำนวณผ่าน Dictionary
+            agg_dict = {
+                'GRANDTOTAL': 'sum',
+                'QTY': 'sum'
+            }
+            if has_bill:
+                agg_dict['BILL_NO_CUSTOM'] = 'nunique'
+                
+            # 2. ทำการรวบรวมข้อมูล
+            top_products = df_p_filtered.groupby(group_cols).agg(agg_dict).reset_index()
+            
+            # 3. เตรียมแมปสำหรับเปลี่ยนชื่อคอลัมน์กลับเป็นภาษาไทย
+            rename_map = {
+                p_col: 'ชื่อสินค้า',
+                'GRANDTOTAL': 'ยอดขายรวม',
+                'QTY': 'จำนวนที่ขาย'
+            }
+            if u_col:
+                rename_map[u_col] = 'หน่วย'
+            if has_bill:
+                rename_map['BILL_NO_CUSTOM'] = 'จำนวนบิล'
+                
+            top_products.rename(columns=rename_map, inplace=True)
+            
+            # 4. หากไฟล์ต้นฉบับไม่มีคอลัมน์หน่วย ให้เพิ่มหน่วย 'ไม่ระบุ' เข้าไป
+            if not u_col:
                 top_products.insert(1, 'หน่วย', 'ไม่ระบุ')
             
+            # กรองและจัดอันดับ
             top_products = top_products[top_products['ยอดขายรวม'] > 0]
             top_products = top_products.sort_values(by='จำนวนที่ขาย', ascending=False).head(20).reset_index(drop=True)
             top_products.insert(0, 'ลำดับ', range(1, len(top_products) + 1))
